@@ -1,0 +1,38 @@
+[project]
+name = "ddt-price-trend"
+version = "0.1.0"
+description = "弹弹堂账号价格跟踪与管理平台"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "httpx>=0.27,<1",
+  "beautifulsoup4>=4.12,<5", "apscheduler>=3.10,<4", "portalocker>=3,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+
+[project.scripts]
+ddt = "ddt.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ddt"]
+
+[tool.hatch.build]
+artifacts = ["src/ddt/static/**"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/ddt", "frontend/src", "frontend/package.json", "frontend/package-lock.json", "frontend/index.html", "frontend/vite.config.js", "tests", "pyproject.toml", "uv.lock", "README.md", ".python-version", "start.ps1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
