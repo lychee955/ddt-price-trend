@@ -37,7 +37,7 @@ jobs:
       failed: ${{ steps.crawl.outputs.failed }}
       result: ${{ steps.crawl.outputs.result }}
     env:
-      DDT_DATA_DIR: ${{ runner.temp }}/ddt-data
+      DDT_DATA_DIR: ${{ github.workspace }}/.tmp/actions-data
       OPERATION: ${{ inputs.operation || 'collect' }}
       SEED_RELEASE: ${{ inputs.seed_release }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
