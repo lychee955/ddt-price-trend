@@ -26,7 +26,7 @@ packages = ["src/ddt"]
 artifacts = ["src/ddt/static/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/ddt", "frontend/src", "frontend/package.json", "frontend/package-lock.json", "frontend/index.html", "frontend/vite.config.js", "tests", "pyproject.toml", "uv.lock", "README.md", ".python-version", "start.ps1"]
+include = ["src/ddt", "frontend/src", "frontend/test", "frontend/package.json", "frontend/package-lock.json", "frontend/index.html", "frontend/vite.config.js", "tests", "pyproject.toml", "uv.lock", "README.md", ".python-version", "start.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

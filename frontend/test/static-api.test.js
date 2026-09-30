@@ -66,3 +66,25 @@ test('failed downloads are not cached forever', async () => {
   failed = false
   assert.equal((await api('/products')).total, 3)
 })
+
+test('overlapping refreshes keep each overview and publication on one version', async () => {
+  const first = 'a'.repeat(32), second = 'b'.repeat(32)
+  let version = first, releaseOld
+  const oldData = new Promise(resolve => {releaseOld = resolve})
+  const api = createStaticApi('/', async url => {
+    if (url.endsWith('manifest.json')) return {ok:true,json:async () => ({format:1,version,histories:{}})}
+    const old = url.includes(first)
+    if (old) await oldData
+    return {ok:true,json:async () => url.endsWith('runs.json') ? {items:[]} : {latest:{id:old?1:2}}}
+  })
+  const earlier = api('/overview')
+  await new Promise(resolve => setImmediate(resolve))
+  version = second
+  const current = await api('/overview')
+  releaseOld()
+  const old = await earlier
+  assert.equal(current.publication.version, second)
+  assert.equal(current.latest.id, 2)
+  assert.equal(old.publication.version, first)
+  assert.equal(old.latest.id, 1)
+})

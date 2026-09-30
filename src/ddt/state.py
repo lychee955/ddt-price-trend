@@ -75,7 +75,7 @@ def verify_state(source, expected_run_id=None):
 def restore_state(source, expected_run_id=None):
     manifest = verify_state(source, expected_run_id)
     target = data_dir() / "tracker.db"
-    if target.exists() or target.with_name("tracker.db-wal").exists():
+    if any(target.with_name(name).exists() for name in ("tracker.db", "tracker.db-wal", "tracker.db-shm")):
         raise ValueError("目标目录已有数据库，拒绝覆盖")
     shutil.copyfile(Path(source) / "tracker.db", target)
     return manifest

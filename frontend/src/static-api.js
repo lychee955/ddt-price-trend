@@ -48,22 +48,24 @@ export function createStaticApi(base, fetcher = fetch) {
     if (manifest?.version !== next.version) files = new Map()
     manifest = next
   }
-  async function load(name) {
-    if (!files.has(name)) {
-      const pending = json('versions/' + manifest.version + '/' + name)
-      files.set(name, pending)
-      pending.catch(() => files.delete(name))
+  async function versionFile(name, snapshot, cache) {
+    if (!cache.has(name)) {
+      const pending = json('versions/' + snapshot.version + '/' + name)
+      cache.set(name, pending)
+      pending.catch(() => cache.delete(name))
     }
-    return files.get(name)
+    return cache.get(name)
   }
   return async function api(path, options = {}) {
     if (options.method && options.method !== 'GET') throw new Error('公开看板仅支持查看数据')
     const [route, query = ''] = path.split('?')
     const params = new URLSearchParams(query)
     if (!manifest || route === '/overview') await refreshManifest()
+    const snapshot = manifest, cache = files
+    const load = name => versionFile(name, snapshot, cache)
     if (route === '/overview') {
       const [overview, runs] = await Promise.all([load('overview.json'), load('runs.json')])
-      return {...overview, publication: manifest, last_attempt: runs.items[0] || null}
+      return {...overview, publication: snapshot, last_attempt: runs.items[0] || null}
     }
     if (route === '/products') return filterProducts(await load('products.json'), params)
     if (route === '/settings') return {}
@@ -82,7 +84,7 @@ export function createStaticApi(base, fetcher = fetch) {
     if (product) {
       const id = decodeURIComponent(product[1])
       if (product[2]) {
-        const file = manifest.histories[id]
+        const file = snapshot.histories[id]
         if (!/^history\/[a-f0-9]{64}\.json$/.test(file || '')) throw new Error('商品不存在')
         return load(file)
       }
