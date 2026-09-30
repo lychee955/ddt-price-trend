@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from .state import MAX_STATE_BYTES, pack_state, restore_state, verify_state
 
-MAX_ENCRYPTED_BYTES = 140 * 1024 * 1024
+MAX_ENCRYPTED_BYTES = 100 * 1024 * 1024
 
 
 def cipher(key_file=None):
