@@ -10,3 +10,4 @@ frontend/dist/
 src/ddt/static/
 dist/
 .env
+.tmp/

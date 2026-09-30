@@ -191,6 +191,69 @@ def test_recover_only_running_and_schedule(monkeypatch):
         assert conn.execute("SELECT next_run_at FROM runtime").fetchone()[0] > now()
 
 
+@pytest.mark.parametrize(
+    ("prices", "total_delta", "total_percent"),
+    [
+        ([10000], 0, 0),
+        ([10000, 8000, 9000], -1000, -10),
+        ([10000, 12000, 11000], 1000, 10),
+        ([10000, 8000, 8000], -2000, -20),
+        ([10000, 8000, 10000], 0, 0),
+        ([10000, 8000, None, None], -2000, -20),
+        ([10000, None, 11000], 1000, 10),
+        ([0, 10000], 10000, None),
+        ([300, 200], -100, -33.33),
+    ],
+)
+def test_api_total_price_change(prices, total_delta, total_percent):
+    batch([item("other")])
+    for price in prices:
+        batch([item(price=price)] if price is not None else [], drop_threshold=1)
+    with TestClient(app) as client:
+        row = client.get("/api/products?q=1").json()["items"][0]
+        assert row["total_delta"] == total_delta
+        assert row["total_percent"] == total_percent
+
+
+def test_api_total_price_change_survives_failed_batch():
+    batch([item(price=10000)])
+    batch([item(price=8000)])
+    with pytest.raises(CrawlError):
+        batch([])
+    with TestClient(app) as client:
+        row = client.get("/api/products").json()["items"][0]
+        assert row["total_delta"] == -2000
+        assert row["total_percent"] == -20
+
+
+@pytest.mark.parametrize(
+    ("sort", "expected"),
+    [
+        ("delta_asc", ["b", "c", "d", "e", "f", "a"]),
+        ("delta_desc", ["a", "c", "d", "e", "f", "b"]),
+        ("total_delta_asc", ["d", "a", "c", "f", "b", "e"]),
+        ("total_delta_desc", ["e", "b", "c", "f", "a", "d"]),
+        ("drop", ["b", "c", "d", "e", "f", "a"]),
+    ],
+)
+def test_api_price_change_sorting_before_pagination(sort, expected):
+    batch([item(pid) for pid in "abcde"])
+    batch([item(pid, price) for pid, price in zip("abcde", [7000, 12000, 10000, 8000, 15000])])
+    batch([item(pid, price) for pid, price in zip("abcdf", [9000, 11000, 10000, 8000, 10000])])
+    with TestClient(app) as client:
+        ids = []
+        for page in range(1, 4):
+            response = client.get("/api/products", params={"sort": sort, "page": page, "page_size": 2})
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total"] == 6
+            ids.extend(row["id"] for row in data["items"])
+        assert ids == expected
+        filtered = client.get("/api/products", params={"sort": sort, "status": "listed"}).json()
+        assert [row["id"] for row in filtered["items"]] == [pid for pid in expected if pid != "e"]
+        assert client.get("/api/products", params={"sort": "invalid"}).status_code == 422
+
+
 def test_api_filters_settings_auth_and_csrf(monkeypatch):
     batch([item("1", 5000), item("2", 20000)])
     batch([item("1", 4500), item("2", 20000)])

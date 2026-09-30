@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -23,10 +24,30 @@ def main():
     subs.add_parser("worker", help="单独启动采集进程")
     subs.add_parser("crawl", help="执行一次完整采集")
     subs.add_parser("backup", help="在线备份 SQLite")
+    export = subs.add_parser("export", help="导出公开只读看板 JSON")
+    export.add_argument("--output", type=Path, required=True, help="静态数据输出目录")
+    pack = subs.add_parser("state-pack", help="打包并校验完整数据库状态")
+    pack.add_argument("--output", type=Path, required=True)
+    restore = subs.add_parser("state-restore", help="恢复校验通过的状态到空数据目录")
+    restore.add_argument("--source", type=Path, required=True)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.command == "state-restore":
+        from .state import restore_state
+
+        restore_state(args.source)
+        print("状态已恢复")
+        return
     init_db()
-    if args.command == "worker":
+    if args.command == "export":
+        from .export import export_site
+
+        print(export_site(args.output)["version"])
+    elif args.command == "state-pack":
+        from .state import pack_state
+
+        print(pack_state(args.output)["sha256"])
+    elif args.command == "worker":
         worker()
     elif args.command == "crawl":
         try:
@@ -44,7 +65,7 @@ def main():
     elif args.command == "backup":
         target = data_dir() / "backups" / f"tracker-{datetime.now():%Y%m%d-%H%M%S-%f}.db"
         target.parent.mkdir(exist_ok=True)
-        with connect() as source, sqlite3.connect(target) as dest:
+        with connect() as source, closing(sqlite3.connect(target)) as dest:
             source.backup(dest)
         print(target)
     elif args.command == "serve":

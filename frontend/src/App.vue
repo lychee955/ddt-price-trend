@@ -6,12 +6,37 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { registerPriceTools } from './webmcp'
+import { createStaticApi } from './static-api'
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
+
+const readonly = import.meta.env.VITE_STATIC_MODE === 'true'
+const staticApi = readonly ? createStaticApi(import.meta.env.BASE_URL) : null
+const clock = ref(Date.now())
 
 const view = ref('products'), overview = ref(null), products = ref([]), total = ref(0), servers = ref([])
 const loading = ref(false), submitting = ref(false), saving = ref(false), error = ref(''), authorized = ref(true)
 const token = ref(sessionStorage.getItem('ddt-token') || '')
 const filters = reactive({q:'', server:'', status:'', change:'', sort:'latest', page:1, min_price:null, max_price:null})
+const productTable = ref(null)
+const tableSorts = {
+  drop: {prop:'delta', order:'ascending'},
+  delta_asc: {prop:'delta', order:'ascending'},
+  delta_desc: {prop:'delta', order:'descending'},
+  total_delta_asc: {prop:'total_delta', order:'ascending'},
+  total_delta_desc: {prop:'total_delta', order:'descending'},
+}
+function sortProducts({prop, order}) {
+  const current = tableSorts[filters.sort]
+  if (current?.prop === prop && current?.order === order) return
+  filters.sort = order && ['delta','total_delta'].includes(prop) ? prop+(order==='ascending'?'_asc':'_desc') : 'latest'
+  filters.page = 1
+  search()
+}
+watch([productTable, () => filters.sort], () => {
+  const current = tableSorts[filters.sort]
+  if (current) productTable.value?.sort(current.prop, current.order)
+  else productTable.value?.clearSort()
+}, {flush:'post'})
 const runs = ref([]), runTotal = ref(0), runPage = ref(1), config = reactive({})
 const detail = ref(null), history = ref(null), detailOpen = ref(false), detailLoading = ref(false)
 const runDetail = ref(null), runOpen = ref(false), chartElement = ref(null)
@@ -26,10 +51,12 @@ const summary = computed(() => latest.value?.summary || {})
 const cooldown = computed(() => overview.value?.runtime?.cooldown_until && new Date(overview.value.runtime.cooldown_until) > new Date())
 const online = computed(() => overview.value?.runtime?.worker_online)
 const active = computed(() => overview.value?.active)
+const stale = computed(() => readonly && (!latest.value?.finished_at || clock.value - Date.parse(latest.value.finished_at) > 5 * 60 * 60 * 1000))
 const visibleCount = computed(() => (overview.value?.counts?.listed || 0) + (overview.value?.counts?.publicity || 0))
 const missingCount = computed(() => (summary.value.suspected_missing || 0) + (summary.value.missing || 0) + (summary.value.delisted || 0))
 
 async function api(path, options={}) {
+  if (readonly) return staticApi(path, options)
   const response = await fetch('/api'+path, {...options, headers:{'Content-Type':'application/json','X-DDT-Client':'dashboard', ...(token.value ? {Authorization:'Bearer '+token.value} : {}), ...options.headers}})
   if (response.status === 401) { authorized.value=false; throw new Error('请先输入访问令牌') }
   const data = await response.json()
@@ -88,7 +115,7 @@ async function showRun(row) {try {runDetail.value=await api('/crawls/'+row.id); 
 function chooseChange(change) {filters.change=filters.change===change?'':change; filters.page=1; search()}
 function resize(){chart?.resize()}
 watch(view, async v => {try {if(v==='runs') await loadRuns(); if(v==='products') await loadProducts()} catch(e){error.value=e.message}})
-onMounted(()=>{refresh(true);timer=setInterval(()=>refresh(),5000);window.addEventListener('resize',resize);unregisterTools=registerPriceTools(api)})
+onMounted(()=>{refresh(true);timer=setInterval(()=>{clock.value=Date.now();refresh()},readonly?60000:5000);window.addEventListener('resize',resize);unregisterTools=registerPriceTools(api)})
 onBeforeUnmount(()=>{clearInterval(timer);chart?.dispose();window.removeEventListener('resize',resize);unregisterTools?.()})
 </script>
 
@@ -98,14 +125,16 @@ onBeforeUnmount(()=>{clearInterval(timer);chart?.dispose();window.removeEventLis
       <div class="brand"><span class="brand-mark">弹</span><div>号价观察<small>弹弹堂 · 4399 游戏店</small></div></div>
       <div class="nav-caption">工作台</div>
       <button :class="['nav-item',{selected:view==='products'}]" @click="view='products'"><span>▦</span> 商品看板</button>
-      <button :class="['nav-item',{selected:view==='runs'}]" @click="view='runs'"><span>◷</span> 采集管理</button>
+      <button :class="['nav-item',{selected:view==='runs'}]" @click="view='runs'"><span>◷</span> {{readonly?'采集记录':'采集管理'}}</button>
       <div class="sidebar-bottom"><span class="source-badge">80</span><div>只关注弹弹堂账号<small>上架中 · 公示期</small></div></div>
     </aside>
     <main>
-      <header class="page-header"><div><div class="eyebrow">ACCOUNT PRICE MONITOR</div><h1>{{view==='products'?'商品看板':'采集管理'}}</h1><p>{{view==='products'?'关注每一次价格变化。':'管理采集计划，查看每一批次的执行结果。'}}</p></div><div class="header-actions"><el-tag :type="online?'success':'info'" effect="plain">{{online?'采集服务在线':'采集服务离线'}}</el-tag><el-button type="primary" size="large" :loading="submitting" :disabled="!!active || !!cooldown || !online" @click="trigger">{{active?'正在采集…':'立即采集'}}</el-button></div></header>
+      <header class="page-header"><div><div class="eyebrow">ACCOUNT PRICE MONITOR</div><h1>{{view==='products'?'商品看板':readonly?'采集记录':'采集管理'}}</h1><p>{{view==='products'?'关注每一次价格变化。':readonly?'查看每一批次的执行结果。':'管理采集计划，查看每一批次的执行结果。'}}</p></div><div class="header-actions"><template v-if="readonly"><el-tag :type="stale?'warning':'success'" effect="plain">{{stale?'数据待更新':'只读看板'}}</el-tag><el-button @click="refresh(true)">刷新数据</el-button></template><template v-else><el-tag :type="online?'success':'info'" effect="plain">{{online?'采集服务在线':'采集服务离线'}}</el-tag><el-button type="primary" size="large" :loading="submitting" :disabled="!!active || !!cooldown || !online" @click="trigger">{{active?'正在采集…':'立即采集'}}</el-button></template></div></header>
 
       <el-alert v-if="error && authorized" :title="error" type="error" show-icon :closable="false" class="notice"/>
-      <el-alert v-if="!online && authorized && overview" title="采集服务未运行。请使用 uv run ddt serve 启动完整程序，或单独运行 uv run ddt worker。" type="warning" :closable="false" class="notice"/>
+      <el-alert v-if="!readonly && !online && authorized && overview" title="采集服务未运行。请使用 uv run ddt serve 启动完整程序，或单独运行 uv run ddt worker。" type="warning" :closable="false" class="notice"/>
+      <el-alert v-if="readonly && overview" :title="'最后成功采集：'+date(latest?.finished_at)+'。计划每 2 小时更新，实际时间可能延迟。'" :type="stale?'warning':'info'" :closable="false" class="notice"/>
+      <el-alert v-if="readonly && overview?.last_attempt && overview.last_attempt.status!=='success'" :title="'最近一次采集：'+label(overview.last_attempt.status)+'，继续展示上次成功结果。'" type="warning" :closable="false" class="notice"/>
       <el-alert v-if="cooldown" :title="'采集已暂停，冷却至 '+date(overview.runtime.cooldown_until)+'。'+(overview.runtime.last_error || '')" type="warning" :closable="false" class="notice"/>
       <div v-if="active" class="progress-strip"><span class="pulse"></span><strong>批次 #{{active.id}} · {{label(active.status)}}</strong><span>已完成 {{active.pages_done}} 页 · 发现 {{active.product_count}} 个商品</span><span>采集完成后自动更新</span></div>
 
@@ -125,23 +154,24 @@ onBeforeUnmount(()=>{clearInterval(timer);chart?.dispose();window.removeEventLis
             <el-select v-model="filters.change" placeholder="全部变化" clearable aria-label="筛选变化"><el-option v-for="s in ['new','decreased','increased','returned','suspected_missing','missing','delisted','sold','status_changed']" :key="s" :label="label(s)" :value="s"/></el-select>
             <el-select v-model="filters.status" placeholder="全部状态" clearable aria-label="筛选状态"><el-option v-for="s in ['listed','publicity','suspected_missing','missing','delisted','sold']" :key="s" :label="label(s)" :value="s"/></el-select>
             <el-button native-type="submit" type="primary" plain>筛选</el-button>
-            <div class="filter-second"><span>价格范围</span><el-input-number v-model="filters.min_price" :min="0" :controls="false" placeholder="最低 ¥" aria-label="最低价格"/><span>至</span><el-input-number v-model="filters.max_price" :min="0" :controls="false" placeholder="最高 ¥" aria-label="最高价格"/><el-select v-model="filters.sort" aria-label="排序方式" @change="filters.page=1;search()"><el-option label="最近发现" value="latest"/><el-option label="价格从低到高" value="price_asc"/><el-option label="价格从高到低" value="price_desc"/><el-option label="降价金额优先" value="drop"/><el-option label="降价比例优先" value="drop_percent"/></el-select><el-button text @click="Object.assign(filters,{q:'',server:'',change:'',status:'',min_price:null,max_price:null,sort:'latest',page:1});search()">重置</el-button></div>
+            <div class="filter-second"><span>价格范围</span><el-input-number v-model="filters.min_price" :min="0" :controls="false" placeholder="最低 ¥" aria-label="最低价格"/><span>至</span><el-input-number v-model="filters.max_price" :min="0" :controls="false" placeholder="最高 ¥" aria-label="最高价格"/><el-select v-model="filters.sort" aria-label="排序方式" @change="filters.page=1;search()"><el-option label="最近发现" value="latest"/><el-option label="价格从低到高" value="price_asc"/><el-option label="价格从高到低" value="price_desc"/><el-option label="本次涨跌金额升序" value="delta_asc"/><el-option label="本次涨跌金额降序" value="delta_desc"/><el-option label="总涨跌金额升序" value="total_delta_asc"/><el-option label="总涨跌金额降序" value="total_delta_desc"/><el-option label="降价金额优先" value="drop"/><el-option label="降价比例优先" value="drop_percent"/></el-select><el-button text @click="Object.assign(filters,{q:'',server:'',change:'',status:'',min_price:null,max_price:null,sort:'latest',page:1});search()">重置</el-button></div>
           </form>
-          <el-table :data="products" v-loading="loading" class="product-table" row-key="id" @row-click="showProduct">
+          <el-table ref="productTable" :data="products" v-loading="loading" class="product-table" row-key="id" @row-click="showProduct" @sort-change="sortProducts">
             <el-table-column label="账号 / 区服" min-width="310"><template #default="{row}"><button class="product-title" @click.stop="showProduct(row)">{{row.title}}</button><div class="product-meta">{{row.server}} <span>#{{row.id}}</span></div></template></el-table-column>
             <el-table-column label="当前 / 最后价格" width="155"><template #default="{row}"><strong class="price">{{money(row.price)}}</strong><div class="product-meta">{{['listed','publicity'].includes(row.status)?'上次 '+money(row.previous_price):'最后一次观察价'}}</div></template></el-table-column>
-            <el-table-column label="本次涨跌" width="155"><template #default="{row}"><span :class="row.delta<0?'down':row.delta>0?'up':'muted'">{{row.delta==null?'—':(row.delta>0?'+':'')+money(row.delta)}}<small v-if="row.percent!=null">{{row.percent>0?'+':''}}{{row.percent}}%</small></span></template></el-table-column>
+            <el-table-column prop="delta" label="本次涨跌" sortable="custom" width="155"><template #header><el-tooltip content="点击按本次涨跌金额排序；无本次调价记录按 0 排序"><span>本次涨跌</span></el-tooltip></template><template #default="{row}"><span :class="row.delta<0?'down':row.delta>0?'up':'muted'">{{row.delta==null?'—':(row.delta>0?'+':'')+money(row.delta)}}<small v-if="row.percent!=null">{{row.percent>0?'+':''}}{{row.percent}}%</small></span></template></el-table-column>
+            <el-table-column prop="total_delta" label="总涨跌" sortable="custom" width="155"><template #header><el-tooltip content="当前 / 最后价格相较首次收录价格的变化；点击按总涨跌金额排序"><span>总涨跌</span></el-tooltip></template><template #default="{row}"><span class="total-change" :class="row.total_delta<0?'down':row.total_delta>0?'up':'muted'">{{row.total_delta==null?'—':(row.total_delta>0?'+':'')+money(row.total_delta)}}<small v-if="row.total_percent!=null">{{row.total_percent>0?'+':''}}{{row.total_percent}}%</small></span></template></el-table-column>
             <el-table-column label="状态与变化" min-width="165"><template #default="{row}"><div class="tags"><el-tag :type="color(row.status)" size="small" effect="plain">{{label(row.status)}}</el-tag><el-tag v-for="c in row.changes.filter(x=>x!==row.status)" :key="c" :type="color(c)" size="small">{{label(c)}}</el-tag></div></template></el-table-column>
             <el-table-column label="最后发现" width="175"><template #default="{row}"><span class="last-seen">{{date(row.last_seen)}}</span></template></el-table-column>
             <el-table-column width="80"><template #default="{row}"><el-button link type="primary" @click.stop="showProduct(row)">历史</el-button></template></el-table-column>
-            <template #empty><el-empty :description="latest?'没有符合筛选条件的账号':'点击「立即采集」，建立第一份价格快照'" :image-size="90"/></template>
+            <template #empty><el-empty :description="latest?'没有符合筛选条件的账号':readonly?'尚无成功采集数据，请等待首次更新':'点击「立即采集」，建立第一份价格快照'" :image-size="90"/></template>
           </el-table>
           <div class="table-footer"><span>挂牌价格 · 不代表成交价格</span><el-pagination v-model:current-page="filters.page" :page-size="20" :total="total" layout="prev,pager,next" @current-change="search"/></div>
         </div>
       </section>
 
-      <section v-else class="management">
-        <div class="panel settings-panel"><div class="panel-heading"><h2>自动采集</h2><el-tag effect="plain">{{config.enabled?'已开启':'已关闭'}}</el-tag></div><el-form label-position="top" class="settings-form">
+      <section v-else class="management" :class="{readonly}">
+        <div v-if="!readonly" class="panel settings-panel"><div class="panel-heading"><h2>自动采集</h2><el-tag effect="plain">{{config.enabled?'已开启':'已关闭'}}</el-tag></div><el-form label-position="top" class="settings-form">
           <el-form-item label="定时采集"><el-switch v-model="config.enabled"/><span class="muted switch-note">电脑需要保持运行</span></el-form-item>
           <el-form-item label="采集间隔（分钟）"><el-input-number v-model="config.interval_minutes" :min="15" :max="10080"/></el-form-item>
           <el-form-item label="每个请求的随机间隔（秒）"><div class="range-input"><el-input-number v-model="config.delay_min" :min="2" :max="60"/><span>至</span><el-input-number v-model="config.delay_max" :min="config.delay_min || 2" :max="120"/></div></el-form-item>
@@ -160,3 +190,8 @@ onBeforeUnmount(()=>{clearInterval(timer);chart?.dispose();window.removeEventLis
   <el-drawer v-model="runOpen" size="min(760px, 100vw)" title="采集批次详情"><template v-if="runDetail"><h2>批次 #{{runDetail.run.id}} · {{label(runDetail.run.status)}}</h2><p>开始：{{date(runDetail.run.started_at)}}<br>结束：{{date(runDetail.run.finished_at)}}</p><el-alert v-if="runDetail.run.error" :title="runDetail.run.error" type="error" :closable="false"/><div v-for="p in runDetail.pages" :key="p.id" class="log-row"><el-tag :type="p.status==='failed'?'danger':'info'">{{({parsed:'已解析',rechecked:'已复核',retry:'重试',failed:'失败',detail:'详情检查',detail_unknown:'详情未确认'})[p.status] || p.status}}</el-tag><small>{{date(p.created_at)}} · {{p.count ?? '—'}} 个</small><code>{{p.url}}</code><p v-if="p.error">{{p.error}}</p></div></template></el-drawer>
   <el-dialog :model-value="!authorized" title="访问号价观察" width="min(440px, 95vw)" :show-close="false" :close-on-click-modal="false" :close-on-press-escape="false"><p>输入部署时设置的访问令牌。</p><el-input v-model="token" type="password" show-password placeholder="访问令牌" aria-label="访问令牌" @keyup.enter="login"/><p v-if="error" class="error-text">{{error}}</p><template #footer><el-button type="primary" @click="login">进入管理页面</el-button></template></el-dialog>
 </template>
+
+<style scoped>
+.management.readonly { grid-template-columns: 1fr; }
+.total-change small { display: block; font-size: 12px; margin-top: 4px; font-weight: 400; }
+</style>

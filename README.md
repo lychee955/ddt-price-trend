@@ -46,6 +46,8 @@ uv build
 - 初次完整采集为基线。后续新增指首次被本系统发现，不等于真实发布时间。
 - 每轮保存全部商品快照，包括价格不变的商品；消失商品保存价格为空的观察记录。
 - 价格变化比较商品上次观察到的价格；重新出现的商品同时记录重新出现及价格变化。
+- 商品看板「总涨跌」为当前 / 最后观察价相较首次成功收录价的累计变化，展示金额与百分比；首次收录为零，首次价格为零时不显示百分比。
+- 点击「本次涨跌」「总涨跌」表头或旁边的箭头，可按金额升序、降序或取消排序；后端先排序再分页，本次无调价记录按零排序。
 - 消失一次为疑似下架，两次为持续未发现，不推断已经成交。详情页仅在明确状态容器出现售出/下架提示时确认；当前真实在售页已验证，真实下架提示仍需更多样本校准。
 - 缺页、重复商品、总数变化、价格解析错误或总量下降超过阈值（默认 30%）均拒绝发布批次，不更新历史基准。大量真实下架也可能触发保护；人工检查后可调整阈值再采集。
 - 所有列表分页串行抓取，请求间隔默认 3–8 秒；超时与 5xx 最多重试三次，指数退避。
@@ -68,3 +70,31 @@ tests/fixtures 公开页面样本（2026-09-16），仅用于离线回归测试
 Python 使用标准库 sqlite3 显式事务，便于审核批次发布的原子性；第一版未引入 ORM 和 Redis。依赖分别锁定于 uv.lock 和 frontend/package-lock.json。
 
 前端在支持 WebMCP 的浏览器中提供只读 `read_ddt_price_changes` 工具，不支持的浏览器不受影响。该可选工具尚未在浏览器 WebMCP 上下文中验证；常规 HTTP API 已测试。
+
+## GitHub Actions 与免费只读看板
+
+支持公开仓库中使用标准 Linux runner 单次采集，并将 JSON 与只读前端发布到 GitHub Pages。本地管理模式保持可用。
+
+- `.github/workflows/ci.yml`：离线测试、前端两种模式构建及 wheel 资源检查。
+- `.github/workflows/collect.yml`：恢复完整 SQLite 状态、单次采集、一致性备份与校验、静态导出、Pages 发布。
+- 每 2 小时第 17 分钟计划运行。需设置仓库变量 `DDT_SCHEDULE_ENABLED=true` 才启用定时采集；GitHub 调度可能延迟或漏跑。
+- 首次在 Actions 的 **Collect and publish → Run workflow** 选择 `initialize`。可以导入已有状态；之后选择 `collect` 采集，或 `publish` 仅重新发布网页。
+- SQLite 完整状态保存在 `ddt-state-<run_id>-<attempt>` artifact，最新 3 份滚动保留、最长 90 天。失败和冷却也保存在状态中。数据库不提交到 Git、不发布到 Pages；公开仓库的 artifact 仍可被有读取权限的人下载。
+- 公开网页只读取导出 JSON，可筛选、排序、查看涨跌及历史。网页显示最后成功时间和失败状态，不提供在线设置或直接触发采集。
+- 状态丢失、损坏或上一轮未完成保存时停止采集；检查后通过 `recover` 明确恢复旧状态，本轮不采集并至少冷却 60 分钟。不要用重新初始化绕过失败或冷却。
+
+Pages 设置、首次导入、故障恢复和免费额度控制详见 [操作手册](docs/github-actions-setup.md)；方案调研见 [部署调研](docs/github-actions-deployment.md)。
+
+本地构建静态模式（PowerShell）：
+
+```powershell
+$env:VITE_STATIC_MODE = 'true'
+$env:VITE_BASE_PATH = '/ddt-price-trend/'
+cd frontend
+npm ci
+npm run build
+cd ..
+uv run ddt export --output frontend/dist/data
+```
+
+静态模式输出到 `frontend/dist`。恢复本地管理模式时删除这两个环境变量，再执行普通 `npm run build`；普通构建仍输出到 `src/ddt/static`。

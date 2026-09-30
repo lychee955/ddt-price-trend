@@ -1,0 +1,134 @@
+name: Collect and publish
+
+on:
+  schedule:
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'initialize=首次初始化；collect=采集；publish=仅发布；recover=人工确认回退并冷却'
+        type: choice
+        options: [collect, publish, initialize, recover]
+        default: collect
+      seed_release:
+        description: '仅初始化：可选，当前仓库内包含 state.zip 的 Release 标签，留空建立新基线'
+        type: string
+        default: ''
+
+# Covers both state handoff and deployment; manual runs cannot race the schedule.
+concurrency:
+  group: ddt-state-and-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name != 'schedule' || vars.DDT_SCHEDULE_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      failed: ${{ steps.crawl.outputs.failed }}
+      result: ${{ steps.crawl.outputs.result }}
+    env:
+      DDT_DATA_DIR: ${{ runner.temp }}/ddt-data
+      OPERATION: ${{ inputs.operation || 'collect' }}
+      SEED_RELEASE: ${{ inputs.seed_release }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: '3.12'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Restore verified state (missing state stops the run)
+        run: uv run python -m ddt.actions restore --operation "$OPERATION" --branch "$DEFAULT_BRANCH" --seed-release "$SEED_RELEASE"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Collect once, preserving failure and cooldown state
+        id: crawl
+        if: env.OPERATION == 'collect'
+        run: uv run python -m ddt.actions collect
+      - name: Create consistent state bundle
+        run: uv run python -m ddt.actions pack --output "$RUNNER_TEMP/ddt-bundle"
+      - name: Upload state even after a handled crawl failure
+        id: state
+        uses: actions/upload-artifact@v7
+        with:
+          name: ddt-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ddt-bundle/tracker.db
+            ${{ runner.temp }}/ddt-bundle/manifest.json
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 90
+      - name: Download and verify the uploaded state before publishing
+        run: uv run python -m ddt.actions verify-upload --artifact-id "$ARTIFACT_ID" --source "$RUNNER_TEMP/ddt-bundle"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.state.outputs.artifact-id }}
+      - name: Keep the latest three state bundles
+        run: uv run python -m ddt.actions cleanup --artifact-id "$ARTIFACT_ID"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.state.outputs.artifact-id }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: npm ci
+        working-directory: frontend
+      - name: Build the read-only panel
+        run: npm run build
+        working-directory: frontend
+        env:
+          VITE_STATIC_MODE: 'true'
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+      - name: Export public JSON from saved state
+        run: uv run ddt export --output frontend/dist/data
+      - name: Enforce a small Pages artifact
+        run: uv run python .github/scripts/check_site.py
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+          retention-days: 1
+      - name: Run summary
+        env:
+          RESULT: ${{ steps.crawl.outputs.result || 'no-crawl' }}
+          ARTIFACT_ID: ${{ steps.state.outputs.artifact-id }}
+        run: |
+          printf 'Operation: %s\nResult: %s\nVerified state artifact: %s\nKeep an independent offline backup.\n' "$OPERATION" "$RESULT" "$ARTIFACT_ID" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish the static panel
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  report-failure:
+    needs: [snapshot, deploy]
+    if: always() && needs.snapshot.outputs.failed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: |
+          echo '采集失败；数据库中的失败次数和冷却已保存。看板沿用最后成功价格。'
+          exit 1

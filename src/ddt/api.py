@@ -15,6 +15,8 @@ from starlette.middleware.gzip import GZipMiddleware
 from .db import connect, enqueue, init_db, settings
 from .worker import after
 
+PRODUCTS_SQL = (Path(__file__).parent / "sql" / "products.sql").read_text(encoding="utf-8")
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -103,7 +105,10 @@ def products(
     change: str = "",
     min_price: int | None = Query(None, ge=0),
     max_price: int | None = Query(None, ge=0),
-    sort: Literal["latest", "price_asc", "price_desc", "drop", "drop_percent"] = "latest",
+    sort: Literal[
+        "latest", "price_asc", "price_desc", "drop", "drop_percent",
+        "delta_asc", "delta_desc", "total_delta_asc", "total_delta_desc",
+    ] = "latest",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
@@ -139,11 +144,13 @@ def products(
             "price_desc": "p.price DESC,p.id",
             "drop": "COALESCE(delta,0) ASC,p.id",
             "drop_percent": "COALESCE(percent,0) ASC,p.id",
+            "delta_asc": "COALESCE(delta,0) ASC,p.id",
+            "delta_desc": "COALESCE(delta,0) DESC,p.id",
+            "total_delta_asc": "total_delta ASC NULLS LAST,p.id",
+            "total_delta_desc": "total_delta DESC NULLS LAST,p.id",
         }[sort]
         rows = conn.execute(
-            f"""SELECT p.*,e.delta,e.percent,e.old_price
-            FROM products p LEFT JOIN change_events e ON e.product_id=p.id AND e.run_id=?
-            AND e.kind IN ('increased','decreased') WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?""",
+            PRODUCTS_SQL.format(where=where, order=order),
             [rid, *params, page_size, (page - 1) * page_size],
         ).fetchall()
         result = []
@@ -161,6 +168,10 @@ def products(
                 (row["id"], rid),
             ).fetchone()
             value["previous_price"] = previous[0] if previous else None
+            first_price = value.pop("first_price")
+            value["total_percent"] = (
+                round(value["total_delta"] / first_price * 100, 2) if first_price else None
+            )
             result.append(value)
         servers = [r[0] for r in conn.execute("SELECT DISTINCT server FROM products ORDER BY server")]
         return dict(items=result, total=total, servers=servers, run_id=rid)
