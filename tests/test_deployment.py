@@ -5,12 +5,14 @@ import zipfile
 from hashlib import sha256
 
 import pytest
+from cryptography.fernet import Fernet
 
 from ddt import actions
 from ddt.api import products
 from ddt.compare import publish
 from ddt.db import connect, data_dir, enqueue, now
 from ddt.export import export_site
+from ddt.encrypted_state import pack_encrypted, read_encrypted
 from ddt.parser import Blocked, Item
 from ddt.state import pack_state, restore_state, verify_state
 from ddt.worker import after
@@ -119,12 +121,12 @@ def test_failed_crawl_can_be_backed_up_and_restored_without_reset(tmp_path, monk
 def test_remote_recovery_keeps_failures_and_adds_cooldown(tmp_path, monkeypatch):
     with connect() as conn:
         conn.execute("UPDATE runtime SET failures=2 WHERE id=1")
-    bundle = tmp_path / "bundle"
-    pack_state(bundle, {"workflow_run_id": "12"})
+    monkeypatch.setenv("DDT_BACKUP_KEY", Fernet.generate_key().decode())
+    encrypted = tmp_path / "state.enc"
+    pack_encrypted(encrypted, {"workflow_run_id": "12"})
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        for name in ("manifest.json", "tracker.db"):
-            archive.write(bundle / name, name)
+        archive.write(encrypted, "state.enc")
     artifact = {"id": 21, "workflow_run": {"id": 12}}
 
     class FakeGitHub:
@@ -186,3 +188,48 @@ def test_export_empty_database_is_readable(tmp_path):
     version = tmp_path / "public" / "versions" / manifest["version"]
     assert json.loads((version / "products.json").read_text())["items"] == []
     assert manifest["latest_success_at"] is None
+
+
+def test_encrypted_roundtrip_and_authentication(tmp_path, monkeypatch):
+    publish_batch({"1": 12345})
+    until = after(3600)
+    with connect() as conn:
+        conn.execute("UPDATE runtime SET failures=3,cooldown_until=? WHERE id=1", (until,))
+    key = tmp_path / "backup.key"
+    key.write_bytes(Fernet.generate_key())
+    encrypted = tmp_path / "state.enc"
+    manifest = pack_encrypted(encrypted, {"workflow_run_id": "123"}, key)
+    assert b"SQLite format" not in encrypted.read_bytes()
+    assert b"sha256" not in encrypted.read_bytes()
+    assert list(tmp_path.glob("*.db")) == []
+    assert read_encrypted(encrypted, 123, key) == manifest
+    with pytest.raises(ValueError, match="工作流"):
+        read_encrypted(encrypted, 456, key)
+    wrong_key = tmp_path / "wrong.key"
+    wrong_key.write_bytes(Fernet.generate_key())
+    with pytest.raises(ValueError, match="认证失败"):
+        read_encrypted(encrypted, key_file=wrong_key, restore=True)
+    damaged = tmp_path / "damaged.enc"
+    damaged.write_bytes(encrypted.read_bytes()[:-8] + b"aaaaaaaa")
+    with pytest.raises(ValueError, match="认证失败"):
+        read_encrypted(damaged, key_file=key)
+    monkeypatch.setenv("DDT_DATA_DIR", str(tmp_path / "restored-encrypted"))
+    read_encrypted(encrypted, 123, key, restore=True)
+    with connect() as conn:
+        assert conn.execute("SELECT failures,cooldown_until FROM runtime").fetchone()[:] == (3, until)
+        assert conn.execute("SELECT price FROM products").fetchone()[0] == 12345
+    with pytest.raises(ValueError, match="拒绝覆盖"):
+        read_encrypted(encrypted, key_file=key, restore=True)
+
+
+def test_encryption_requires_key_and_rejects_plain_artifact(tmp_path, monkeypatch):
+    monkeypatch.delenv("DDT_BACKUP_KEY", raising=False)
+    with pytest.raises(ValueError, match="密钥缺失"):
+        pack_encrypted(tmp_path / "state.enc")
+    assert not (tmp_path / "state.enc").exists()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("tracker.db", "private")
+        archive.writestr("manifest.json", "{}")
+    with pytest.raises(ValueError, match="拒绝明文"):
+        actions.unpack_bundle(buffer.getvalue(), tmp_path)

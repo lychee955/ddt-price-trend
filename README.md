@@ -76,7 +76,7 @@ Python 使用标准库 sqlite3 显式事务，便于审核批次发布的原子�
 支持公开仓库中使用标准 Linux runner 单次采集，并将 JSON 与只读前端发布到 GitHub Pages。本地管理模式保持可用。
 
 - `.github/workflows/ci.yml`：离线测试、前端两种模式构建及 wheel 资源检查。
-- `.github/workflows/collect.yml`：恢复完整 SQLite 状态、单次采集、一致性备份与校验、静态导出、Pages 发布。
+- `.github/workflows/collect.yml`：从加密备份恢复完整 SQLite 状态、单次采集、加密一致性备份与校验、静态导出、Pages 发布。
 - 每 2 小时第 17 分钟计划运行。需设置仓库变量 `DDT_SCHEDULE_ENABLED=true` 才启用定时采集；GitHub 调度可能延迟或漏跑。
 - 首次在 Actions 的 **Collect and publish → Run workflow** 选择 `initialize`。可以导入已有状态；之后选择 `collect` 采集，或 `publish` 仅重新发布网页。
 - SQLite 完整状态保存在 `ddt-state-<run_id>-<attempt>` artifact，最新 3 份滚动保留、最长 90 天。失败和冷却也保存在状态中。数据库不提交到 Git、不发布到 Pages；公开仓库的 artifact 仍可被有读取权限的人下载。
@@ -98,3 +98,5 @@ uv run ddt export --output frontend/dist/data
 ```
 
 静态模式输出到 `frontend/dist`。恢复本地管理模式时删除这两个环境变量，再执行普通 `npm run build`；普通构建仍输出到 `src/ddt/static`。
+
+云端完整备份使用认证加密，密钥保存在仓库 Secret `DDT_BACKUP_KEY` 并独立离线保留；公开看板不接收密钥。首次导入和恢复命令见操作手册。

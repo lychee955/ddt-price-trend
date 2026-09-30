@@ -12,7 +12,8 @@ from urllib.parse import quote
 import httpx
 
 from .db import connect, enqueue, init_db, settings
-from .state import MAX_STATE_BYTES, pack_state, restore_state, verify_state
+from .encrypted_state import MAX_ENCRYPTED_BYTES, cipher, decrypt_bundle, pack_encrypted, read_encrypted
+from .state import restore_state, verify_state
 from .worker import after, worker
 
 STATE_PREFIX = "ddt-state-"
@@ -63,17 +64,15 @@ class GitHub:
 
 
 def unpack_bundle(content, target):
-    """Read only the two expected members, with bounds; do not extract arbitrary paths."""
-    if len(content) > MAX_STATE_BYTES + 1024 * 1024:
-        raise ValueError("状态压缩包超过上限")
+    """The public artifact must contain only authenticated ciphertext."""
+    if len(content) > MAX_ENCRYPTED_BYTES + 1024 * 1024:
+        raise ValueError("加密状态 artifact 超过上限")
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
-        if sorted(archive.namelist()) != ["manifest.json", "tracker.db"]:
-            raise ValueError("状态压缩包必须仅包含 tracker.db 和 manifest.json")
-        for name, limit in (("tracker.db", MAX_STATE_BYTES), ("manifest.json", 16 * 1024)):
-            info = archive.getinfo(name)
-            if info.file_size > limit:
-                raise ValueError("状态压缩包成员超过上限")
-            Path(target, name).write_bytes(archive.read(name))
+        if archive.namelist() != ["state.enc"]:
+            raise ValueError("状态 artifact 必须仅包含 state.enc，拒绝明文备份")
+        if archive.getinfo("state.enc").file_size > MAX_ENCRYPTED_BYTES:
+            raise ValueError("加密备份超过上限")
+        decrypt_bundle(archive.read("state.enc"), target)
 
 
 def choose_artifact(previous, artifacts, operation):
@@ -98,6 +97,7 @@ def set_output(name, value):
 
 
 def restore_remote(github, operation, branch, seed_release=""):
+    cipher()
     current_id = int(os.environ["GITHUB_RUN_ID"])
     if os.environ.get("GITHUB_RUN_ATTEMPT", "1") != "1":
         raise ValueError("不重跑旧任务；请新建 collect/publish 或人工确认后 recover，避免重复采集")
@@ -107,13 +107,13 @@ def restore_remote(github, operation, branch, seed_release=""):
             raise ValueError("已经存在状态，拒绝重新初始化；请使用 collect/publish/recover")
         if seed_release:
             release = github.request("releases/tags/" + quote(seed_release, safe="")).json()
-            assets = [a for a in release["assets"] if a["name"] == "state.zip"]
-            if len(assets) != 1 or assets[0]["size"] > MAX_STATE_BYTES + 1024 * 1024:
-                raise ValueError("种子 Release 必须包含一个不超过上限的 state.zip")
+            assets = [a for a in release["assets"] if a["name"] == "state.enc"]
+            if len(assets) != 1 or assets[0]["size"] > MAX_ENCRYPTED_BYTES:
+                raise ValueError("种子 Release 必须包含一个不超过上限的 state.enc")
             content = github.request(f"releases/assets/{assets[0]['id']}",
                                      headers={"Accept": "application/octet-stream"}).content
             with tempfile.TemporaryDirectory() as temporary:
-                unpack_bundle(content, temporary)
+                decrypt_bundle(content, temporary)
                 restore_state(temporary)
         else:
             init_db()
@@ -188,7 +188,7 @@ def main():
         collect_once()
         return
     if args.command == "pack":
-        pack_state(args.output, {"workflow_run_id": os.environ["GITHUB_RUN_ID"],
+        pack_encrypted(args.output / "state.enc", {"workflow_run_id": os.environ["GITHUB_RUN_ID"],
                                 "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]})
         return
     github = GitHub()
@@ -203,7 +203,7 @@ def main():
                 conn.execute("UPDATE settings SET value=? WHERE id=1", (json.dumps(conf),))
                 conn.execute("UPDATE runtime SET heartbeat=NULL,next_run_at=NULL WHERE id=1")
         elif args.command == "verify-upload":
-            verify_upload(github, args.artifact_id, verify_state(args.source))
+            verify_upload(github, args.artifact_id, read_encrypted(args.source / "state.enc"))
         else:
             cleanup(github, args.artifact_id)
     finally:

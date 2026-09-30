@@ -11,7 +11,7 @@ on:
         options: [collect, publish, initialize, recover]
         default: collect
       seed_release:
-        description: '仅初始化：可选，当前仓库内包含 state.zip 的 Release 标签，留空建立新基线'
+        description: '仅初始化：可选，当前仓库内包含加密 state.enc 的 Release 标签，留空建立新基线'
         type: string
         default: ''
 
@@ -53,27 +53,29 @@ jobs:
       - name: Restore verified state (missing state stops the run)
         run: uv run python -m ddt.actions restore --operation "$OPERATION" --branch "$DEFAULT_BRANCH" --seed-release "$SEED_RELEASE"
         env:
+          DDT_BACKUP_KEY: ${{ secrets.DDT_BACKUP_KEY }}
           GH_TOKEN: ${{ github.token }}
       - name: Collect once, preserving failure and cooldown state
         id: crawl
         if: env.OPERATION == 'collect'
         run: uv run python -m ddt.actions collect
-      - name: Create consistent state bundle
+      - name: Create authenticated encrypted state bundle
         run: uv run python -m ddt.actions pack --output "$RUNNER_TEMP/ddt-bundle"
+        env:
+          DDT_BACKUP_KEY: ${{ secrets.DDT_BACKUP_KEY }}
       - name: Upload state even after a handled crawl failure
         id: state
         uses: actions/upload-artifact@v7
         with:
           name: ddt-state-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/ddt-bundle/tracker.db
-            ${{ runner.temp }}/ddt-bundle/manifest.json
+          path: ${{ runner.temp }}/ddt-bundle/state.enc
           if-no-files-found: error
-          compression-level: 9
+          compression-level: 0
           retention-days: 90
       - name: Download and verify the uploaded state before publishing
         run: uv run python -m ddt.actions verify-upload --artifact-id "$ARTIFACT_ID" --source "$RUNNER_TEMP/ddt-bundle"
         env:
+          DDT_BACKUP_KEY: ${{ secrets.DDT_BACKUP_KEY }}
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.state.outputs.artifact-id }}
       - name: Keep the latest three state bundles

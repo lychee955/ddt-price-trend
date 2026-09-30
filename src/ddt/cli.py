@@ -30,8 +30,21 @@ def main():
     pack.add_argument("--output", type=Path, required=True)
     restore = subs.add_parser("state-restore", help="恢复校验通过的状态到空数据目录")
     restore.add_argument("--source", type=Path, required=True)
+    for name, help_text, argument in (
+        ("state-encrypt", "加密完整数据库备份", "--output"),
+        ("state-decrypt", "解密并恢复完整备份到空数据目录", "--source"),
+    ):
+        command = subs.add_parser(name, help=help_text)
+        command.add_argument(argument, type=Path, required=True)
+        command.add_argument("--key-file", type=Path, help="本地密钥文件；省略时使用 DDT_BACKUP_KEY")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.command == "state-decrypt":
+        from .encrypted_state import read_encrypted
+
+        read_encrypted(args.source, key_file=args.key_file, restore=True)
+        print("加密状态已校验并恢复")
+        return
     if args.command == "state-restore":
         from .state import restore_state
 
@@ -43,6 +56,11 @@ def main():
         from .export import export_site
 
         print(export_site(args.output)["version"])
+    elif args.command == "state-encrypt":
+        from .encrypted_state import pack_encrypted
+
+        pack_encrypted(args.output, key_file=args.key_file)
+        print("完整状态已加密")
     elif args.command == "state-pack":
         from .state import pack_state
 
