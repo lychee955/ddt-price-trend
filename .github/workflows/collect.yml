@@ -99,6 +99,8 @@ jobs:
         run: uv run ddt export --output frontend/dist/data
       - name: Enforce a small Pages artifact
         run: uv run python .github/scripts/check_site.py
+        env:
+          DDT_PAGES_MAX_MIB: ${{ vars.DDT_PAGES_MAX_MIB || '20' }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/dist

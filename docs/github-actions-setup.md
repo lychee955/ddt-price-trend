@@ -53,11 +53,13 @@
 公开仓库标准 runner 的分钟数免费，存储仍有额度。工作流不使用付费 larger runner，也不缓存数据库。
 
 - 单份未压缩数据库上限 100 MiB，加密文件上限 100 MiB（Fernet 编码有大小开销），最近 3 份滚动保留；上传新版本时会短暂保留第 4 份。
-- Pages 目录上限 5 MiB，Pages artifact 保留 1 天。实际压缩占用通常更小，但必须关注账户共享的 500 MB artifact/Packages 额度及其他仓库占用。
+- Pages 目录默认上限 20 MiB（未压缩大小），Pages artifact 保留 1 天。这是项目的体积保护，不是 GitHub 的平台上限。检查日志显示总大小、公开数据与网页资源大小，以及最大的 5 个文件。
+- 可在 Settings → Secrets and variables → Actions → Variables 设置 `DDT_PAGES_MAX_MIB` 为正整数，调整网页目录上限。实际压缩占用通常更小，但必须关注账户共享的 500 MB artifact/Packages 额度及其他仓库占用；每 2 小时发布时，1 天内可能同时保留约 12 份网页包，不能仅按一份估算存储。
 - 不启用依赖缓存，避免额外 cache 管理和费用。
 - 绑定支付方式的账户应在 Billing → Budgets and alerts 对相关 Actions/存储项设置 0 预算，并开启超额停止使用；单纯通知不会阻止计费。免费额度不足时接受任务暂停。
 - 定期下载一个经过校验的状态 artifact 到本地独立保留。artifact 默认最多保留 90 天，删除所属工作流会一并删除。
 - 下载 artifact 后解压取得 `state.enc`，在新的空数据目录执行 `uv run ddt state-decrypt --source <state.enc> --key-file <backup.key>`。恢复命令不会覆盖已有数据库。完整数据库只在运行器和本地解密；公开 artifact/Release 保存密文，Pages 只发布允许公开的 JSON。Fernet 的文件长度和生成时间仍可见。
-- 所有历史仍保留在 SQLite。网站超过 5 MiB 时应优化公开导出方式，而不是删掉数据库中的历史快照。
+- 所有历史仍保留在 SQLite。网站超过配置上限时应优先优化公开导出方式，而不是删掉数据库中的历史快照。若账户存储余量充足，也可适当提高 `DDT_PAGES_MAX_MIB`。
+- 网页体积检查失败且本轮状态已经验证保存时，调整限制或优化导出后，新建 `publish` 操作重新发布，不必重新采集，也不要点击旧运行的 Re-run jobs。
 
 定时生产采集的用途需符合 GitHub Actions 平台条款；技术部署不代表平台长期可用承诺。网站拦截 GitHub 出口时遵循冷却与停止规则，不切换代理绕过。
