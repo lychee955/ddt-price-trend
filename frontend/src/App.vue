@@ -24,11 +24,13 @@ const tableSorts = {
   delta_desc: {prop:'delta', order:'descending'},
   total_delta_asc: {prop:'total_delta', order:'ascending'},
   total_delta_desc: {prop:'total_delta', order:'descending'},
+  last_seen_asc: {prop:'last_seen', order:'ascending'},
+  last_seen_desc: {prop:'last_seen', order:'descending'},
 }
 function sortProducts({prop, order}) {
   const current = tableSorts[filters.sort]
   if (current?.prop === prop && current?.order === order) return
-  filters.sort = order && ['delta','total_delta'].includes(prop) ? prop+(order==='ascending'?'_asc':'_desc') : 'latest'
+  filters.sort = order && ['delta','total_delta','last_seen'].includes(prop) ? prop+(order==='ascending'?'_asc':'_desc') : 'latest'
   filters.page = 1
   search()
 }
@@ -155,7 +157,7 @@ onBeforeUnmount(()=>{clearInterval(timer);chart?.dispose();window.removeEventLis
             <el-select v-model="filters.status" placeholder="全部状态" clearable aria-label="筛选状态"><el-option v-for="s in ['listed','publicity','suspected_missing','missing','delisted','sold']" :key="s" :label="label(s)" :value="s"/></el-select>
             <el-button native-type="submit" type="primary" plain>筛选</el-button>
             <el-checkbox v-model="filters.include_missing" @change="filters.page=1;search()">显示疑似下架和持续未发现</el-checkbox>
-            <div class="filter-second"><span>价格范围</span><el-input-number v-model="filters.min_price" :min="0" :controls="false" placeholder="最低 ¥" aria-label="最低价格"/><span>至</span><el-input-number v-model="filters.max_price" :min="0" :controls="false" placeholder="最高 ¥" aria-label="最高价格"/><el-select v-model="filters.sort" aria-label="排序方式" @change="filters.page=1;search()"><el-option label="最近发现" value="latest"/><el-option label="价格从低到高" value="price_asc"/><el-option label="价格从高到低" value="price_desc"/><el-option label="本次涨跌金额升序" value="delta_asc"/><el-option label="本次涨跌金额降序" value="delta_desc"/><el-option label="总涨跌金额升序" value="total_delta_asc"/><el-option label="总涨跌金额降序" value="total_delta_desc"/><el-option label="降价金额优先" value="drop"/><el-option label="降价比例优先" value="drop_percent"/></el-select><el-button text @click="Object.assign(filters,{q:'',server:'',change:'',status:'',min_price:null,max_price:null,sort:'latest',page:1,include_missing:false});search()">重置</el-button></div>
+            <div class="filter-second"><span>价格范围</span><el-input-number v-model="filters.min_price" :min="0" :controls="false" placeholder="最低 ¥" aria-label="最低价格"/><span>至</span><el-input-number v-model="filters.max_price" :min="0" :controls="false" placeholder="最高 ¥" aria-label="最高价格"/><el-select v-model="filters.sort" aria-label="排序方式" @change="filters.page=1;search()"><el-option label="首次发现降序" value="latest"/><el-option label="最后发现升序" value="last_seen_asc"/><el-option label="最后发现降序" value="last_seen_desc"/><el-option label="价格从低到高" value="price_asc"/><el-option label="价格从高到低" value="price_desc"/><el-option label="本次涨跌金额升序" value="delta_asc"/><el-option label="本次涨跌金额降序" value="delta_desc"/><el-option label="总涨跌金额升序" value="total_delta_asc"/><el-option label="总涨跌金额降序" value="total_delta_desc"/><el-option label="降价金额优先" value="drop"/><el-option label="降价比例优先" value="drop_percent"/></el-select><el-button text @click="Object.assign(filters,{q:'',server:'',change:'',status:'',min_price:null,max_price:null,sort:'latest',page:1,include_missing:false});search()">重置</el-button></div>
           </form>
           <el-table ref="productTable" :data="products" v-loading="loading" class="product-table" row-key="id" @row-click="showProduct" @sort-change="sortProducts">
             <el-table-column label="账号 / 区服" min-width="310"><template #default="{row}"><button class="product-title" @click.stop="showProduct(row)">{{row.title}}</button><div class="product-meta">{{row.server}} <span>#{{row.id}}</span></div></template></el-table-column>
@@ -163,7 +165,7 @@ onBeforeUnmount(()=>{clearInterval(timer);chart?.dispose();window.removeEventLis
             <el-table-column prop="delta" label="本次涨跌" sortable="custom" width="155"><template #header><el-tooltip content="点击按本次涨跌金额排序；无本次调价记录按 0 排序"><span>本次涨跌</span></el-tooltip></template><template #default="{row}"><span :class="row.delta<0?'down':row.delta>0?'up':'muted'">{{row.delta==null?'—':(row.delta>0?'+':'')+money(row.delta)}}<small v-if="row.percent!=null">{{row.percent>0?'+':''}}{{row.percent}}%</small></span></template></el-table-column>
             <el-table-column prop="total_delta" label="总涨跌" sortable="custom" width="155"><template #header><el-tooltip content="当前 / 最后价格相较首次收录价格的变化；点击按总涨跌金额排序"><span>总涨跌</span></el-tooltip></template><template #default="{row}"><span class="total-change" :class="row.total_delta<0?'down':row.total_delta>0?'up':'muted'">{{row.total_delta==null?'—':(row.total_delta>0?'+':'')+money(row.total_delta)}}<small v-if="row.total_percent!=null">{{row.total_percent>0?'+':''}}{{row.total_percent}}%</small></span></template></el-table-column>
             <el-table-column label="状态与变化" min-width="165"><template #default="{row}"><div class="tags"><el-tag :type="color(row.status)" size="small" effect="plain">{{label(row.status)}}</el-tag><el-tag v-for="c in row.changes.filter(x=>x!==row.status)" :key="c" :type="color(c)" size="small">{{label(c)}}</el-tag></div></template></el-table-column>
-            <el-table-column label="最后发现" width="175"><template #default="{row}"><span class="last-seen">{{date(row.last_seen)}}</span></template></el-table-column>
+            <el-table-column prop="last_seen" label="最后发现" sortable="custom" width="175"><template #default="{row}"><span class="last-seen">{{date(row.last_seen)}}</span></template></el-table-column>
             <el-table-column width="80"><template #default="{row}"><el-button link type="primary" @click.stop="showProduct(row)">历史</el-button></template></el-table-column>
             <template #empty><el-empty :description="latest?'没有符合筛选条件的账号':readonly?'尚无成功采集数据，请等待首次更新':'点击「立即采集」，建立第一份价格快照'" :image-size="90"/></template>
           </el-table>

@@ -3,9 +3,9 @@ import test from 'node:test'
 import {createStaticApi, filterProducts} from '../src/static-api.js'
 
 const data = {run_id: 2, servers: ['一区', '二区'], items: [
-  {id:'1', title:'账号 Alpha', server:'一区', status:'listed', price:8000, delta:-2000, percent:-20, total_delta:-2000, first_seen:'2026-09-01', changes:['decreased']},
-  {id:'2', title:'账号 Beta', server:'二区', status:'missing', price:20000, delta:null, percent:null, total_delta:1000, first_seen:'2026-09-02', changes:['suspected_missing']},
-  {id:'3', title:'账号 Gamma', server:'一区', status:'publicity', price:15000, delta:3000, percent:25, total_delta:null, first_seen:'2026-09-02', changes:['increased']},
+  {id:'1', title:'账号 Alpha', server:'一区', status:'listed', price:8000, delta:-2000, percent:-20, total_delta:-2000, first_seen:'2026-09-01', last_seen:'2026-09-04', changes:['decreased']},
+  {id:'2', title:'账号 Beta', server:'二区', status:'missing', price:20000, delta:null, percent:null, total_delta:1000, first_seen:'2026-09-02', last_seen:'2026-09-02', changes:['suspected_missing']},
+  {id:'3', title:'账号 Gamma', server:'一区', status:'publicity', price:15000, delta:3000, percent:25, total_delta:null, first_seen:'2026-09-02', last_seen:'2026-09-04', changes:['increased']},
 ]}
 const query = value => new URLSearchParams(value)
 
@@ -26,6 +26,25 @@ test('sorting matches null and tie behavior before pagination', () => {
   const page = filterProducts(data, query('sort=price_asc&page=2&page_size=1'))
   assert.deepEqual(page.items.map(row => row.id), ['3'])
   assert.equal(page.total, 3)
+  assert.deepEqual(data.items.map(row => row.id), ['1','2','3'])
+})
+
+test('last seen sorting uses observation time and stable ties before pagination', () => {
+  for (const [sort, expected] of [
+    ['last_seen_asc', ['2','1','3']],
+    ['last_seen_desc', ['1','3','2']],
+  ]) {
+    const ids = []
+    for (let page = 1; page <= 3; page++) {
+      const result = filterProducts(data, query({sort, page, page_size:1}))
+      assert.equal(result.total, 3)
+      ids.push(...result.items.map(row => row.id))
+    }
+    assert.deepEqual(ids, expected)
+    const filtered = filterProducts(data, query({sort, include_missing:false}))
+    assert.equal(filtered.total, 2)
+    assert.deepEqual(filtered.items.map(row => row.id), expected.filter(id => id !== '2'))
+  }
   assert.deepEqual(data.items.map(row => row.id), ['1','2','3'])
 })
 

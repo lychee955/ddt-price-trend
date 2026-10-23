@@ -108,6 +108,7 @@ def products(
     sort: Literal[
         "latest", "price_asc", "price_desc", "drop", "drop_percent",
         "delta_asc", "delta_desc", "total_delta_asc", "total_delta_desc",
+        "last_seen_asc", "last_seen_desc",
     ] = "latest",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -143,6 +144,8 @@ def products(
         total = conn.execute(f"SELECT COUNT(*) FROM products p WHERE {where}", params).fetchone()[0]
         order = {
             "latest": "p.first_seen DESC,p.id DESC",
+            "last_seen_asc": "p.last_seen ASC,p.id",
+            "last_seen_desc": "p.last_seen DESC,p.id",
             "price_asc": "p.price ASC,p.id",
             "price_desc": "p.price DESC,p.id",
             "drop": "COALESCE(delta,0) ASC,p.id",

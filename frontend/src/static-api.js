@@ -22,10 +22,12 @@ export function filterProducts(data, params) {
     price_asc: ['price', 1], price_desc: ['price', -1], drop: ['delta', 1],
     drop_percent: ['percent', 1], delta_asc: ['delta', 1], delta_desc: ['delta', -1],
     total_delta_asc: ['total_delta', 1], total_delta_desc: ['total_delta', -1],
+    last_seen_asc: ['last_seen', 1], last_seen_desc: ['last_seen', -1],
   }
   rows.sort((a, b) => {
     if (sort === 'latest') return compareText(b.first_seen, a.first_seen) || compareText(b.id, a.id)
     const [key, direction] = orders[sort] || orders.price_asc
+    if (key === 'last_seen') return compareText(a.last_seen, b.last_seen) * direction || compareText(a.id, b.id)
     if (key === 'total_delta') {
       if (a[key] == null && b[key] != null) return 1
       if (b[key] == null && a[key] != null) return -1

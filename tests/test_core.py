@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -252,6 +253,35 @@ def test_api_price_change_sorting_before_pagination(sort, expected):
         filtered = client.get("/api/products", params={"sort": sort, "status": "listed"}).json()
         assert [row["id"] for row in filtered["items"]] == [pid for pid in expected if pid != "e"]
         assert client.get("/api/products", params={"sort": "invalid"}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("sort", "expected"),
+    [("last_seen_asc", ["2", "1", "3"]), ("last_seen_desc", ["1", "3", "2"])],
+)
+def test_api_last_seen_sorting_before_pagination(sort, expected):
+    batch([
+        replace(item(pid), observed_at=f"2026-09-0{day}T00:00:00+00:00")
+        for pid, day in [("1", 1), ("2", 2), ("3", 2)]
+    ])
+    batch(
+        [replace(item(pid), observed_at="2026-09-04T00:00:00+00:00") for pid in "13"],
+        drop_threshold=1,
+    )
+    with TestClient(app) as client:
+        ids = []
+        for page in range(1, 4):
+            response = client.get("/api/products", params={"sort": sort, "page": page, "page_size": 1})
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total"] == 3
+            ids.extend(row["id"] for row in data["items"])
+        assert ids == expected
+        filtered = client.get("/api/products", params={"sort": sort, "include_missing": False}).json()
+        assert filtered["total"] == 2
+        assert [row["id"] for row in filtered["items"]] == [pid for pid in expected if pid != "2"]
+        latest = client.get("/api/products").json()
+        assert [row["id"] for row in latest["items"]] == ["3", "2", "1"]
 
 
 @pytest.mark.parametrize(
