@@ -254,6 +254,37 @@ def test_api_price_change_sorting_before_pagination(sort, expected):
         assert client.get("/api/products", params={"sort": "invalid"}).status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("include_missing", "expected"),
+    [(False, ["1", "2", "5", "6"]), (True, ["3", "4", "1", "2", "5", "6"])],
+)
+def test_api_missing_visibility_before_pagination(include_missing, expected):
+    visible = [item("1", 300), item("2", 400, "publicity")]
+    batch([*visible, item("3", 100), item("4", 200), item("5", 500), item("6", 600)])
+    batch(
+        [*visible, item("3", 100)],
+        evidence={"5": ("delisted", "明确下架"), "6": ("sold", "明确售出")},
+        drop_threshold=1,
+    )
+    batch(visible, drop_threshold=1)
+    with TestClient(app) as client:
+        params = {"include_missing": include_missing, "sort": "price_asc", "page_size": 2}
+        ids = []
+        for page in range(1, len(expected) // 2 + 1):
+            result = client.get("/api/products", params={**params, "page": page}).json()
+            assert result["total"] == len(expected)
+            ids.extend(row["id"] for row in result["items"])
+        assert ids == expected
+        for key in ("status", "change"):
+            result = client.get(
+                "/api/products", params={**params, key: "suspected_missing"}
+            ).json()
+            assert [row["id"] for row in result["items"]] == (["3"] if include_missing else [])
+        for status in ("suspected_missing", "missing"):
+            result = client.get("/api/products", params={"include_missing": True, "status": status}).json()
+            assert result["total"] == 1
+
+
 def test_api_filters_settings_auth_and_csrf(monkeypatch):
     batch([item("1", 5000), item("2", 20000)])
     batch([item("1", 4500), item("2", 20000)])

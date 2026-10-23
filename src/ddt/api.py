@@ -111,8 +111,11 @@ def products(
     ] = "latest",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    include_missing: bool = True,
 ):
     conditions, params = ["1=1"], []
+    if not include_missing:
+        conditions.append("p.status NOT IN ('suspected_missing','missing')")
     if q:
         conditions.append("(p.title LIKE ? OR p.id LIKE ?)")
         params.extend([f"%{q}%"] * 2)

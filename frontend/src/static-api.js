@@ -10,7 +10,9 @@ export function filterProducts(data, params) {
   const q = params.get('q') || ''
   const server = params.get('server'), status = params.get('status'), change = params.get('change')
   const minimum = params.get('min_price'), maximum = params.get('max_price')
+  const includeMissing = params.get('include_missing') !== 'false'
   const rows = data.items.filter(row =>
+    (includeMissing || !['suspected_missing', 'missing'].includes(row.status)) &&
     (!q || like(q, row.title) || like(q, row.id)) &&
     (!server || row.server === server) && (!status || row.status === status) &&
     (!change || row.changes.includes(change)) &&

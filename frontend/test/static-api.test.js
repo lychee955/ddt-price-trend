@@ -29,6 +29,26 @@ test('sorting matches null and tie behavior before pagination', () => {
   assert.deepEqual(data.items.map(row => row.id), ['1','2','3'])
 })
 
+test('missing visibility filters both statuses before counting and pagination', () => {
+  const all = {...data, items:[...data.items,
+    {...data.items[1], id:'4', status:'suspected_missing', price:1000},
+    {...data.items[0], id:'5', status:'delisted', price:5000},
+    {...data.items[0], id:'6', status:'sold', price:10000},
+  ]}
+  const hidden = filterProducts(all, query('include_missing=false&sort=price_asc&page_size=2&page=2'))
+  assert.equal(hidden.total, 4)
+  assert.deepEqual(hidden.items.map(row => row.id), ['6','3'])
+  const shown = filterProducts(all, query('include_missing=true&sort=price_asc&page_size=2&page=2'))
+  assert.equal(shown.total, 6)
+  assert.deepEqual(shown.items.map(row => row.id), ['1','6'])
+  for (const status of ['suspected_missing', 'missing']) {
+    assert.equal(filterProducts(all, query('include_missing=false&status='+status)).total, 0)
+    assert.equal(filterProducts(all, query('include_missing=true&status='+status)).total, 1)
+  }
+  assert.equal(filterProducts(all, query('include_missing=false&change=suspected_missing')).total, 0)
+  assert.equal(filterProducts(all, query('include_missing=true&change=suspected_missing')).total, 2)
+})
+
 test('versioned requests use the Pages subpath and change together', async () => {
   const calls = [], first = 'a'.repeat(32), second = 'b'.repeat(32), file = 'history/'+'c'.repeat(64)+'.json'
   let version = first
