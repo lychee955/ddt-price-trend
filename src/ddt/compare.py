@@ -10,7 +10,7 @@ EXPIRED_MISSING_SQL = (Path(__file__).parent / "sql" / "expired_missing.sql").re
 
 
 def _delete_expired_missing(conn, stamp):
-    """Remove a continuous 21-day missing streak and its history in the publishing transaction."""
+    """Remove a continuous 60-day missing streak and its history in the publishing transaction."""
     expired = [row[0] for row in conn.execute(EXPIRED_MISSING_SQL, (stamp,))]
     # Stay below SQLite's parameter limit even when many products expire together.
     for start in range(0, len(expired), 500):

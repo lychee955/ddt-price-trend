@@ -29,9 +29,10 @@ def batch(monkeypatch, stamp, ids=("active",), *, evidence=None, statuses=None, 
 @pytest.mark.parametrize(
     ("stamp", "expired"),
     [
-        ("2026-09-22T23:59:59+00:00", False),
-        ("2026-09-23T00:00:00+00:00", True),
-        ("2026-09-24T00:00:00+00:00", True),
+        ("2026-09-23T00:00:00+00:00", False),
+        ("2026-10-31T23:59:59+00:00", False),
+        ("2026-11-01T00:00:00+00:00", True),
+        ("2026-11-02T00:00:00+00:00", True),
     ],
 )
 def test_missing_retention_boundary_and_related_data(monkeypatch, repeat_missing, stamp, expired):
@@ -65,21 +66,21 @@ def test_reappearance_resets_streak_and_deleted_product_starts_fresh(monkeypatch
     batch(monkeypatch, "2026-09-01T00:00:00+00:00", ("active", "target"))
     batch(monkeypatch, "2026-09-02T00:00:00+00:00")
     # A product that returns on the expiry date is retained with its original history.
-    returned = batch(monkeypatch, "2026-09-23T00:00:00+00:00", ("active", "target"))
+    returned = batch(monkeypatch, "2026-11-01T00:00:00+00:00", ("active", "target"))
     with connect() as conn:
         row = conn.execute("SELECT * FROM products WHERE id='target'").fetchone()
         assert row["first_seen"] == "2026-09-01T00:00:00+00:00" and row["missing_count"] == 0
         assert conn.execute(
             "SELECT kind FROM change_events WHERE run_id=? AND product_id='target'", (returned,)
         ).fetchone()[0] == "returned"
-    batch(monkeypatch, "2026-09-24T00:00:00+00:00")
-    batch(monkeypatch, "2026-10-14T23:59:59+00:00")
+    batch(monkeypatch, "2026-11-02T00:00:00+00:00")
+    batch(monkeypatch, "2026-12-31T23:59:59+00:00")
     with connect() as conn:
         assert conn.execute("SELECT 1 FROM products WHERE id='target'").fetchone()
-    batch(monkeypatch, "2026-10-15T00:00:00+00:00")
+    batch(monkeypatch, "2027-01-01T00:00:00+00:00")
     with connect() as conn:
         assert conn.execute("SELECT 1 FROM products WHERE id='target'").fetchone() is None
-    fresh_stamp = "2026-10-16T00:00:00+00:00"
+    fresh_stamp = "2027-01-02T00:00:00+00:00"
     batch(monkeypatch, fresh_stamp, ("active", "target"))
     with connect() as conn:
         assert conn.execute("SELECT first_seen FROM products WHERE id='target'").fetchone()[0] == fresh_stamp
@@ -99,7 +100,7 @@ def test_retention_keeps_other_statuses_and_export_excludes_deleted_history(monk
         statuses=statuses,
     )
     batch(
-        monkeypatch, "2026-09-23T00:00:00+00:00", ("active", "publicity"), statuses=statuses,
+        monkeypatch, "2026-11-01T00:00:00+00:00", ("active", "publicity"), statuses=statuses,
     )
     with connect() as conn:
         assert {row[0]: row[1] for row in conn.execute("SELECT id,status FROM products")} == {
@@ -117,7 +118,7 @@ def test_retention_keeps_other_statuses_and_export_excludes_deleted_history(monk
 def test_many_products_expire_in_one_batch(monkeypatch):
     batch(monkeypatch, "2026-09-01T00:00:00+00:00", ("active", *(str(i) for i in range(1001))))
     batch(monkeypatch, "2026-09-02T00:00:00+00:00")
-    batch(monkeypatch, "2026-09-23T00:00:00+00:00")
+    batch(monkeypatch, "2026-11-01T00:00:00+00:00")
     with connect() as conn:
         assert [row[0] for row in conn.execute("SELECT id FROM products")] == ["active"]
         assert conn.execute("SELECT COUNT(*) FROM product_snapshots").fetchone()[0] == 3
@@ -140,7 +141,7 @@ def test_failed_batch_preserves_expired_products_and_history(monkeypatch, failur
     error = CrawlError if failure == "collapse" else sqlite3.IntegrityError
     with pytest.raises(error):
         batch(
-            monkeypatch, "2026-09-23T00:00:00+00:00",
+            monkeypatch, "2026-11-01T00:00:00+00:00",
             () if failure == "collapse" else ("active",), drop_threshold=0.3,
         )
     with connect() as conn:

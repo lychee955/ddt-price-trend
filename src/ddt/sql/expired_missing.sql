@@ -16,4 +16,4 @@ WHERE p.status IN ('suspected_missing', 'missing')
         ), 0)
       ORDER BY s.run_id
       LIMIT 1
-  )) <= julianday(?) - 21;
+  )) <= julianday(?) - 60;
