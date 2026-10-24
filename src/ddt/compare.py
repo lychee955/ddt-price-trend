@@ -1,8 +1,27 @@
 import json
 from collections import Counter
+from pathlib import Path
 
 from .db import connect, now
 from .parser import CrawlError, Item
+
+
+EXPIRED_MISSING_SQL = (Path(__file__).parent / "sql" / "expired_missing.sql").read_text(encoding="utf-8")
+
+
+def _delete_expired_missing(conn, stamp):
+    """Remove a continuous 21-day missing streak and its history in the publishing transaction."""
+    expired = [row[0] for row in conn.execute(EXPIRED_MISSING_SQL, (stamp,))]
+    # Stay below SQLite's parameter limit even when many products expire together.
+    for start in range(0, len(expired), 500):
+        ids = expired[start:start + 500]
+        placeholders = ",".join("?" for _ in ids)
+        for table, column in (
+            ("change_events", "product_id"),
+            ("product_snapshots", "product_id"),
+            ("products", "id"),
+        ):
+            conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", ids)
 
 
 def publish(run_id: int, items: list[Item], evidence=None, drop_threshold=0.3):
@@ -103,6 +122,7 @@ def publish(run_id: int, items: list[Item], evidence=None, drop_threshold=0.3):
             )
             if prev["status"] != status:
                 event(pid, status, prev["price"], None, prev["status"], status)
+        _delete_expired_missing(conn, stamp)
         conn.execute(
             """UPDATE crawl_runs SET status='success',finished_at=?,base_run_id=?,
                      product_count=?,summary=? WHERE id=?""",
