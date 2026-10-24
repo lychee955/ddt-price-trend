@@ -19,6 +19,8 @@ const token = ref(sessionStorage.getItem('ddt-token') || '')
 const filters = reactive({q:'', server:'', status:'', change:'', sort:'latest', page:1, min_price:null, max_price:null, include_missing:false})
 const productTable = ref(null)
 const tableSorts = {
+  price_asc: {prop:'price', order:'ascending'},
+  price_desc: {prop:'price', order:'descending'},
   drop: {prop:'delta', order:'ascending'},
   delta_asc: {prop:'delta', order:'ascending'},
   delta_desc: {prop:'delta', order:'descending'},
@@ -30,7 +32,7 @@ const tableSorts = {
 function sortProducts({prop, order}) {
   const current = tableSorts[filters.sort]
   if (current?.prop === prop && current?.order === order) return
-  filters.sort = order && ['delta','total_delta','last_seen'].includes(prop) ? prop+(order==='ascending'?'_asc':'_desc') : 'latest'
+  filters.sort = order && ['price','delta','total_delta','last_seen'].includes(prop) ? prop+(order==='ascending'?'_asc':'_desc') : 'latest'
   filters.page = 1
   search()
 }
@@ -161,7 +163,7 @@ onBeforeUnmount(()=>{clearInterval(timer);chart?.dispose();window.removeEventLis
           </form>
           <el-table ref="productTable" :data="products" v-loading="loading" class="product-table" row-key="id" @row-click="showProduct" @sort-change="sortProducts">
             <el-table-column label="账号 / 区服" min-width="310"><template #default="{row}"><button class="product-title" @click.stop="showProduct(row)">{{row.title}}</button><div class="product-meta">{{row.server}} <span>#{{row.id}}</span></div></template></el-table-column>
-            <el-table-column label="当前 / 最后价格" width="155"><template #default="{row}"><strong class="price">{{money(row.price)}}</strong><div class="product-meta">{{['listed','publicity'].includes(row.status)?'上次 '+money(row.previous_price):'最后一次观察价'}}</div></template></el-table-column>
+            <el-table-column prop="price" label="当前 / 最后价格" sortable="custom" width="155"><template #header><el-tooltip content="点击按当前 / 最后价格排序"><span>当前 / 最后价格</span></el-tooltip></template><template #default="{row}"><strong class="price">{{money(row.price)}}</strong><div class="product-meta">{{['listed','publicity'].includes(row.status)?'上次 '+money(row.previous_price):'最后一次观察价'}}</div></template></el-table-column>
             <el-table-column prop="delta" label="本次涨跌" sortable="custom" width="155"><template #header><el-tooltip content="点击按本次涨跌金额排序；无本次调价记录按 0 排序"><span>本次涨跌</span></el-tooltip></template><template #default="{row}"><span :class="row.delta<0?'down':row.delta>0?'up':'muted'">{{row.delta==null?'—':(row.delta>0?'+':'')+money(row.delta)}}<small v-if="row.percent!=null">{{row.percent>0?'+':''}}{{row.percent}}%</small></span></template></el-table-column>
             <el-table-column prop="total_delta" label="总涨跌" sortable="custom" width="155"><template #header><el-tooltip content="当前 / 最后价格相较首次收录价格的变化；点击按总涨跌金额排序"><span>总涨跌</span></el-tooltip></template><template #default="{row}"><span class="total-change" :class="row.total_delta<0?'down':row.total_delta>0?'up':'muted'">{{row.total_delta==null?'—':(row.total_delta>0?'+':'')+money(row.total_delta)}}<small v-if="row.total_percent!=null">{{row.total_percent>0?'+':''}}{{row.total_percent}}%</small></span></template></el-table-column>
             <el-table-column label="状态与变化" min-width="165"><template #default="{row}"><div class="tags"><el-tag :type="color(row.status)" size="small" effect="plain">{{label(row.status)}}</el-tag><el-tag v-for="c in row.changes.filter(x=>x!==row.status)" :key="c" :type="color(c)" size="small">{{label(c)}}</el-tag></div></template></el-table-column>
