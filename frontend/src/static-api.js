@@ -44,7 +44,12 @@ export function createStaticApi(base, fetcher = fetch) {
   async function json(path, fresh = false) {
     const response = await fetcher(base + 'data/' + path, fresh ? {cache: 'no-store'} : {})
     if (!response.ok) throw new Error('看板数据暂不可用，请稍后刷新')
-    return response.json()
+    if (!path.endsWith('.gz')) return response.json()
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    // Fetch may have already decoded the body if the host set Content-Encoding.
+    if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) return new Response(bytes).json()
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
+    return new Response(stream).json()
   }
   async function refreshManifest() {
     const next = await json('manifest.json', true)
@@ -89,7 +94,7 @@ export function createStaticApi(base, fetcher = fetch) {
       const id = decodeURIComponent(product[1])
       if (product[2]) {
         const file = snapshot.histories[id]
-        if (!/^history\/[a-f0-9]{64}\.json$/.test(file || '')) throw new Error('商品不存在')
+        if (!/^history\/[a-f0-9]{64}\.json(?:\.gz)?$/.test(file || '')) throw new Error('商品不存在')
         return load(file)
       }
       const value = (await load('products.json')).items.find(row => row.id === id)

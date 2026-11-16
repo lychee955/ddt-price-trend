@@ -1,5 +1,6 @@
 """Export a consistent, public, read-only snapshot without exposing runtime logs."""
 
+import gzip
 import json
 import os
 import sqlite3
@@ -23,7 +24,10 @@ def public_run(run):
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    content = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if path.suffix == ".gz":
+        content = gzip.compress(content, compresslevel=6, mtime=0)
+    path.write_bytes(content)
 
 
 def export_site(output: Path):
@@ -56,7 +60,7 @@ def export_site(output: Path):
                 page += 1
             for product in items:
                 pid = product["id"]
-                name = sha256(pid.encode()).hexdigest() + ".json"
+                name = sha256(pid.encode()).hexdigest() + ".json.gz"
                 histories[pid] = "history/" + name
                 history = api.history(pid)
                 for snapshot in history["snapshots"]:

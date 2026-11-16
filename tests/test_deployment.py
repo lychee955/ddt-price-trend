@@ -1,3 +1,4 @@
+import gzip
 import io
 import json
 import sqlite3
@@ -178,8 +179,15 @@ def test_export_matches_api_and_sanitizes_failed_runtime(tmp_path):
     assert manifest["latest_success_at"]
     assert not list(root.rglob("*.db"))
     assert "secret" not in "".join(path.read_text(encoding="utf-8") for path in root.rglob("*.json"))
-    history = json.loads((version / manifest["histories"]["1"]).read_text(encoding="utf-8"))
+    history_path = version / manifest["histories"]["1"]
+    assert history_path.name.endswith(".json.gz")
+    history = json.loads(gzip.decompress(history_path.read_bytes()))
     assert len(history["snapshots"]) == 2 and history["gaps"][0]["status"] == "failed"
+    assert history["events"]
+    missing_path = version / manifest["histories"]["2"]
+    missing_history = json.loads(gzip.decompress(missing_path.read_bytes()))
+    assert missing_history["snapshots"][-1]["present"] == 0
+    assert "不推断成交" in missing_history["snapshots"][-1]["evidence"]
     assert json.loads((root / "manifest.json").read_text())["version"] == manifest["version"]
 
 

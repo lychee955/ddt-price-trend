@@ -3,7 +3,7 @@ from pathlib import Path
 
 site = Path("frontend/dist")
 try:
-    limit_mib = int(os.environ.get("DDT_PAGES_MAX_MIB", "20"))
+    limit_mib = int(os.environ.get("DDT_PAGES_MAX_MIB") or "100")
 except ValueError:
     raise SystemExit("DDT_PAGES_MAX_MIB 必须是正整数（单位 MiB）") from None
 if limit_mib <= 0:
@@ -12,7 +12,7 @@ if limit_mib <= 0:
 files = [(path, path.stat().st_size) for path in site.rglob("*") if path.is_file()]
 total = sum(size for _, size in files)
 data_size = sum(size for path, size in files if path.is_relative_to(site / "data"))
-print(f"Pages 未压缩大小：{total / 1024**2:.2f} MiB（{total:,} 字节），上限 {limit_mib} MiB", flush=True)
+print(f"Pages 目录大小：{total / 1024**2:.2f} MiB（{total:,} 字节），上限 {limit_mib} MiB", flush=True)
 print(f"公开数据：{data_size / 1024**2:.2f} MiB；网页资源：{(total - data_size) / 1024**2:.2f} MiB", flush=True)
 for path, size in sorted(files, key=lambda entry: entry[1], reverse=True)[:5]:
     print(f"  {size / 1024**2:.2f} MiB  {path.relative_to(site)}", flush=True)

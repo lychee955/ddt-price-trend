@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import {gzipSync} from 'node:zlib'
 import {createStaticApi, filterProducts} from '../src/static-api.js'
 
 const data = {run_id: 2, servers: ['一区', '二区'], items: [
@@ -104,6 +105,21 @@ test('failed downloads are not cached forever', async () => {
   await assert.rejects(api('/products'), /暂不可用/)
   failed = false
   assert.equal((await api('/products')).total, 3)
+})
+
+test('reads gzip history whether or not the host sets Content-Encoding', async () => {
+  const version = 'a'.repeat(32)
+  const files = {raw: 'history/' + 'b'.repeat(64) + '.json.gz', decoded: 'history/' + 'c'.repeat(64) + '.json.gz'}
+  const history = {snapshots: [{price: null, source_status: 'missing', evidence: '本轮列表未发现'}], events: [], gaps: []}
+  const content = JSON.stringify(history)
+  const api = createStaticApi('/', async url => {
+    if (url.endsWith('manifest.json')) return Response.json({format: 1, version, histories: files})
+    if (url.endsWith(files.raw)) return new Response(gzipSync(content))
+    assert.ok(url.endsWith(files.decoded))
+    return new Response(content, {headers: {'Content-Encoding': 'gzip'}})
+  })
+  assert.deepEqual(await api('/products/raw/history'), history)
+  assert.deepEqual(await api('/products/decoded/history'), history)
 })
 
 test('overlapping refreshes keep each overview and publication on one version', async () => {
