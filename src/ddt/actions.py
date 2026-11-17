@@ -1,6 +1,7 @@
 """Actions state handoff. Never silently create a baseline after a lost backup."""
 
 import argparse
+import filecmp
 import io
 import json
 import os
@@ -13,7 +14,7 @@ import httpx
 
 from .db import connect, enqueue, init_db, settings
 from .encrypted_state import MAX_ENCRYPTED_BYTES, cipher, decrypt_bundle, pack_encrypted, read_encrypted
-from .state import restore_state, verify_state
+from .state import restore_state
 from .worker import after, worker
 
 STATE_PREFIX = "ddt-state-"
@@ -149,22 +150,22 @@ def collect_once():
     set_output("failed", "false" if status == "success" else "true")
 
 
-def verify_upload(github, artifact_id, expected):
-    artifact = github.request(f"actions/artifacts/{artifact_id}").json()
-    if artifact["expired"] or artifact["workflow_run"]["id"] != int(os.environ["GITHUB_RUN_ID"]):
-        raise ValueError("上传状态所属工作流不匹配或已过期")
-    with tempfile.TemporaryDirectory() as temporary:
-        unpack_bundle(github.download(artifact), temporary)
-        actual = verify_state(temporary, os.environ["GITHUB_RUN_ID"])
-    if actual != expected:
+def verify_upload(source, download_dir):
+    downloaded = download_dir / "state.enc"
+    if set(download_dir.iterdir()) != {downloaded} or not downloaded.is_file():
+        raise ValueError("状态 artifact 必须仅包含 state.enc")
+    if not filecmp.cmp(source, downloaded, shallow=False):
         raise ValueError("上传状态与本轮备份不一致")
+    read_encrypted(downloaded, os.environ["GITHUB_RUN_ID"])
 
 
 def cleanup(github, artifact_id):
     artifacts = sorted(github.state_artifacts(), key=lambda a: a["id"], reverse=True)
-    if not artifacts or artifacts[0]["id"] != artifact_id:
+    if artifacts and artifacts[0]["id"] > artifact_id:
         raise ValueError("出现更新的状态，拒绝清理")
-    for artifact in artifacts[3:]:
+    # The current artifact was verified before cleanup and may not be listed by REST yet.
+    older = [artifact for artifact in artifacts if artifact["id"] < artifact_id]
+    for artifact in older[2:]:
         github.request(f"actions/artifacts/{artifact['id']}", method="DELETE")
 
 
@@ -179,8 +180,8 @@ def main():
     pack = subs.add_parser("pack")
     pack.add_argument("--output", type=Path, required=True)
     verify = subs.add_parser("verify-upload")
-    verify.add_argument("--artifact-id", type=int, required=True)
     verify.add_argument("--source", type=Path, required=True)
+    verify.add_argument("--download-dir", type=Path, required=True)
     clean = subs.add_parser("cleanup")
     clean.add_argument("--artifact-id", type=int, required=True)
     args = parser.parse_args()
@@ -190,6 +191,9 @@ def main():
     if args.command == "pack":
         pack_encrypted(args.output / "state.enc", {"workflow_run_id": os.environ["GITHUB_RUN_ID"],
                                 "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]})
+        return
+    if args.command == "verify-upload":
+        verify_upload(args.source, args.download_dir)
         return
     github = GitHub()
     try:
@@ -202,8 +206,6 @@ def main():
                 conf["enabled"] = False
                 conn.execute("UPDATE settings SET value=? WHERE id=1", (json.dumps(conf),))
                 conn.execute("UPDATE runtime SET heartbeat=NULL,next_run_at=NULL WHERE id=1")
-        elif args.command == "verify-upload":
-            verify_upload(github, args.artifact_id, read_encrypted(args.source / "state.enc"))
         else:
             cleanup(github, args.artifact_id)
     finally:

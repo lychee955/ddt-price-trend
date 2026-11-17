@@ -160,6 +160,59 @@ def test_unpack_rejects_traversal_and_extra_files(tmp_path):
         actions.unpack_bundle(buffer.getvalue(), tmp_path)
 
 
+def test_verify_upload_checks_download_without_github_api(tmp_path, monkeypatch):
+    monkeypatch.setenv("DDT_BACKUP_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    source = tmp_path / "state.enc"
+    pack_encrypted(source, {"workflow_run_id": "123"})
+    download_dir = tmp_path / "download"
+    download_dir.mkdir()
+    downloaded = download_dir / "state.enc"
+    content = source.read_bytes()
+    downloaded.write_bytes(content)
+    monkeypatch.setattr("sys.argv", [
+        "ddt.actions", "verify-upload", "--source", str(source), "--download-dir", str(download_dir)
+    ])
+    actions.main()
+
+    monkeypatch.setenv("GITHUB_RUN_ID", "456")
+    with pytest.raises(ValueError, match="工作流"):
+        actions.main()
+
+    extra = download_dir / "extra"
+    extra.touch()
+    with pytest.raises(ValueError, match="仅包含"):
+        actions.main()
+    extra.unlink()
+    downloaded.write_bytes(bytes([content[0] ^ 1]) + content[1:])
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    with pytest.raises(ValueError, match="不一致"):
+        actions.main()
+
+
+@pytest.mark.parametrize("visible_ids", [[12, 9, 11, 10, 8], [9, 11, 10, 8]])
+def test_cleanup_keeps_two_prior_backups_even_if_current_is_not_listed(visible_ids):
+    deleted = []
+
+    class FakeGitHub:
+        def state_artifacts(self):
+            return [{"id": artifact_id} for artifact_id in visible_ids]
+
+        def request(self, path, method):
+            assert method == "DELETE"
+            deleted.append(path)
+
+    actions.cleanup(FakeGitHub(), 12)
+    assert deleted == ["actions/artifacts/9", "actions/artifacts/8"]
+
+    visible_ids.append(13)
+    deleted.clear()
+    with pytest.raises(ValueError, match="拒绝清理"):
+        actions.cleanup(FakeGitHub(), 12)
+    assert not deleted
+
+
 def test_export_matches_api_and_sanitizes_failed_runtime(tmp_path):
     publish_batch({"1": 10000, "2": 20000})
     latest = publish_batch({"1": 8000})
