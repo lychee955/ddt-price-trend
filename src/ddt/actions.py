@@ -1,11 +1,11 @@
 """Actions state handoff. Never silently create a baseline after a lost backup."""
 
 import argparse
-import filecmp
 import io
 import json
 import os
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
@@ -13,11 +13,18 @@ from urllib.parse import quote
 import httpx
 
 from .db import connect, enqueue, init_db, settings
-from .encrypted_state import MAX_ENCRYPTED_BYTES, cipher, decrypt_bundle, pack_encrypted, read_encrypted
-from .state import restore_state
+from .encrypted_state import MAX_ENCRYPTED_BYTES, cipher, decrypt_bundle, pack_encrypted
+from .state import restore_state, verify_state
 from .worker import after, worker
 
 STATE_PREFIX = "ddt-state-"
+ARTIFACT_RETRY_DELAYS = (2, 5, 10, 20, 30, 30, 30)
+
+
+class GitHubRequestError(RuntimeError):
+    def __init__(self, status_code):
+        super().__init__(f"GitHub API 操作失败：HTTP {status_code}")
+        self.status_code = status_code
 
 
 class GitHub:
@@ -34,7 +41,7 @@ class GitHub:
         response = self.client.request(method, path, **kwargs)
         if response.is_error:
             # Do not publish response bodies or temporary signed URLs to logs.
-            raise RuntimeError(f"GitHub API 操作失败：HTTP {response.status_code}")
+            raise GitHubRequestError(response.status_code)
         return response
 
     def pages(self, path, key, **params):
@@ -64,7 +71,7 @@ class GitHub:
         return None
 
 
-def unpack_bundle(content, target):
+def artifact_ciphertext(content):
     """The public artifact must contain only authenticated ciphertext."""
     if len(content) > MAX_ENCRYPTED_BYTES + 1024 * 1024:
         raise ValueError("加密状态 artifact 超过上限")
@@ -73,7 +80,11 @@ def unpack_bundle(content, target):
             raise ValueError("状态 artifact 必须仅包含 state.enc，拒绝明文备份")
         if archive.getinfo("state.enc").file_size > MAX_ENCRYPTED_BYTES:
             raise ValueError("加密备份超过上限")
-        decrypt_bundle(archive.read("state.enc"), target)
+        return archive.read("state.enc")
+
+
+def unpack_bundle(content, target):
+    decrypt_bundle(artifact_ciphertext(content), target)
 
 
 def choose_artifact(previous, artifacts, operation):
@@ -150,13 +161,30 @@ def collect_once():
     set_output("failed", "false" if status == "success" else "true")
 
 
-def verify_upload(source, download_dir):
-    downloaded = download_dir / "state.enc"
-    if set(download_dir.iterdir()) != {downloaded} or not downloaded.is_file():
-        raise ValueError("状态 artifact 必须仅包含 state.enc")
-    if not filecmp.cmp(source, downloaded, shallow=False):
+def verify_upload(github, artifact_id, source):
+    # A finalized upload may take time to become visible to the download service.
+    for delay in (*ARTIFACT_RETRY_DELAYS, None):
+        try:
+            content = github.download({"id": artifact_id})
+        except GitHubRequestError as error:
+            if error.status_code not in (404, 429) and not 500 <= error.status_code < 600:
+                raise
+            reason = f"HTTP {error.status_code}"
+        except httpx.TransportError:
+            reason = "连接失败或下载超时"
+        else:
+            break
+        if delay is None:
+            raise RuntimeError(f"无法回读本轮状态备份（artifact {artifact_id}）：{reason}")
+        print(f"备份暂时无法回读（{reason}），{delay} 秒后重试", flush=True)
+        time.sleep(delay)
+
+    ciphertext = artifact_ciphertext(content)
+    if source.stat().st_size != len(ciphertext) or source.read_bytes() != ciphertext:
         raise ValueError("上传状态与本轮备份不一致")
-    read_encrypted(downloaded, os.environ["GITHUB_RUN_ID"])
+    with tempfile.TemporaryDirectory() as temporary:
+        decrypt_bundle(ciphertext, temporary)
+        verify_state(temporary, os.environ["GITHUB_RUN_ID"])
 
 
 def cleanup(github, artifact_id):
@@ -181,7 +209,7 @@ def main():
     pack.add_argument("--output", type=Path, required=True)
     verify = subs.add_parser("verify-upload")
     verify.add_argument("--source", type=Path, required=True)
-    verify.add_argument("--download-dir", type=Path, required=True)
+    verify.add_argument("--artifact-id", type=int, required=True)
     clean = subs.add_parser("cleanup")
     clean.add_argument("--artifact-id", type=int, required=True)
     args = parser.parse_args()
@@ -191,9 +219,6 @@ def main():
     if args.command == "pack":
         pack_encrypted(args.output / "state.enc", {"workflow_run_id": os.environ["GITHUB_RUN_ID"],
                                 "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]})
-        return
-    if args.command == "verify-upload":
-        verify_upload(args.source, args.download_dir)
         return
     github = GitHub()
     try:
@@ -206,6 +231,8 @@ def main():
                 conf["enabled"] = False
                 conn.execute("UPDATE settings SET value=? WHERE id=1", (json.dumps(conf),))
                 conn.execute("UPDATE runtime SET heartbeat=NULL,next_run_at=NULL WHERE id=1")
+        elif args.command == "verify-upload":
+            verify_upload(github, args.artifact_id, args.source)
         else:
             cleanup(github, args.artifact_id)
     finally:
