@@ -81,11 +81,22 @@ def test_state_rejects_active_or_incomplete_database(tmp_path):
         verify_state(bundle)
 
 
+def state_artifact(artifact_id, run_id, attempt=1):
+    return {
+        "id": artifact_id,
+        "name": f"ddt-state-{run_id}-{attempt}",
+        "workflow_run": {"id": run_id},
+    }
+
+
 def test_failed_workflow_state_is_used_and_missing_latest_state_stops():
     previous = {"id": 12, "status": "completed", "conclusion": "failure"}
-    old = {"id": 20, "workflow_run": {"id": 11}}
-    latest = {"id": 21, "workflow_run": {"id": 12}}
-    assert actions.choose_artifact(previous, [old, latest], "collect") == latest
+    old = state_artifact(30, 11)
+    first_attempt = state_artifact(25, 12)
+    latest = state_artifact(21, 12, attempt=2)
+    artifacts = [old, latest, first_attempt]
+    assert actions.choose_artifact(previous, artifacts, "collect") == latest
+    assert actions.choose_artifact(previous, artifacts, "recover") == latest
     with pytest.raises(ValueError, match="未保存状态"):
         actions.choose_artifact(previous, [old], "collect")
     with pytest.raises(ValueError, match="没有有效"):
@@ -129,7 +140,7 @@ def test_remote_recovery_keeps_failures_and_adds_cooldown(tmp_path, monkeypatch)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.write(encrypted, "state.enc")
-    artifact = {"id": 21, "workflow_run": {"id": 12}}
+    artifact = state_artifact(21, 12)
 
     class FakeGitHub:
         def state_artifacts(self):
@@ -214,22 +225,28 @@ def test_verify_upload_stops_when_unavailable(monkeypatch, tmp_path, status, exp
     assert delays == expected_delays
 
 
-@pytest.mark.parametrize("visible_ids", [[12, 9, 11, 10, 8], [9, 11, 10, 8]])
-def test_cleanup_keeps_two_prior_backups_even_if_current_is_not_listed(visible_ids):
+@pytest.mark.parametrize("current_visible", [True, False])
+def test_cleanup_keeps_two_prior_backups_even_if_current_is_not_listed(monkeypatch, current_visible):
+    monkeypatch.setenv("GITHUB_RUN_ID", "12")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    artifacts = [state_artifact(19, 9), state_artifact(31, 11), state_artifact(10, 10),
+                 state_artifact(18, 8)]
+    if current_visible:
+        artifacts.append(state_artifact(12, 12))
     deleted = []
 
     class FakeGitHub:
         def state_artifacts(self):
-            return [{"id": artifact_id} for artifact_id in visible_ids]
+            return artifacts
 
         def request(self, path, method):
             assert method == "DELETE"
             deleted.append(path)
 
     actions.cleanup(FakeGitHub(), 12)
-    assert deleted == ["actions/artifacts/9", "actions/artifacts/8"]
+    assert deleted == ["actions/artifacts/19", "actions/artifacts/18"]
 
-    visible_ids.append(13)
+    artifacts.append(state_artifact(9, 13))
     deleted.clear()
     with pytest.raises(ValueError, match="拒绝清理"):
         actions.cleanup(FakeGitHub(), 12)
