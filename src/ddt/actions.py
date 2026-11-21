@@ -87,12 +87,16 @@ def unpack_bundle(content, target):
     decrypt_bundle(artifact_ciphertext(content), target)
 
 
+def artifact_order(artifact):
+    # Artifact IDs can arrive out of order. The upload name ends with the run attempt.
+    return artifact["workflow_run"]["id"], int(artifact["name"].rsplit("-", 1)[1])
+
+
 def choose_artifact(previous, artifacts, operation):
     """A failed workflow can have a valid finalized state; conclusion is not the baseline."""
-    candidates = sorted(artifacts, key=lambda a: a["id"], reverse=True)
-    if not candidates:
+    if not artifacts:
         raise ValueError("没有有效状态备份；请导入备份或明确初始化，禁止自动重建基线")
-    chosen = candidates[0]
+    chosen = max(artifacts, key=artifact_order)
     if operation != "recover":
         if not previous or previous["status"] != "completed":
             raise ValueError("上一轮未结束，拒绝开始采集")
@@ -188,11 +192,16 @@ def verify_upload(github, artifact_id, source):
 
 
 def cleanup(github, artifact_id):
-    artifacts = sorted(github.state_artifacts(), key=lambda a: a["id"], reverse=True)
-    if artifacts and artifacts[0]["id"] > artifact_id:
+    # The verified current artifact may not be listed by REST yet.
+    current = int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"])
+    artifacts = sorted(
+        (artifact for artifact in github.state_artifacts() if artifact["id"] != artifact_id),
+        key=artifact_order,
+        reverse=True,
+    )
+    if artifacts and artifact_order(artifacts[0]) > current:
         raise ValueError("出现更新的状态，拒绝清理")
-    # The current artifact was verified before cleanup and may not be listed by REST yet.
-    older = [artifact for artifact in artifacts if artifact["id"] < artifact_id]
+    older = [artifact for artifact in artifacts if artifact_order(artifact) < current]
     for artifact in older[2:]:
         github.request(f"actions/artifacts/{artifact['id']}", method="DELETE")
 
