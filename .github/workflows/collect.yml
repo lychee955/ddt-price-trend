@@ -72,16 +72,12 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
-      # Use the current run's artifact service without github-token to avoid REST visibility delays.
-      - name: Download this run's uploaded state
-        uses: actions/download-artifact@v7
-        with:
-          artifact-ids: ${{ steps.state.outputs.artifact-id }}
-          path: ${{ runner.temp }}/ddt-state-download
-      - name: Verify the downloaded state before publishing
-        run: uv run python -m ddt.actions verify-upload --source "$RUNNER_TEMP/ddt-bundle/state.enc" --download-dir "$RUNNER_TEMP/ddt-state-download"
+      - name: Download and verify the uploaded state before publishing
+        run: uv run python -m ddt.actions verify-upload --artifact-id "$ARTIFACT_ID" --source "$RUNNER_TEMP/ddt-bundle/state.enc"
         env:
           DDT_BACKUP_KEY: ${{ secrets.DDT_BACKUP_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.state.outputs.artifact-id }}
       - name: Keep the latest three state bundles
         run: uv run python -m ddt.actions cleanup --artifact-id "$ARTIFACT_ID"
         env:
