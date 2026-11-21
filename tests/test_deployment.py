@@ -5,6 +5,7 @@ import sqlite3
 import zipfile
 from hashlib import sha256
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 
@@ -160,35 +161,57 @@ def test_unpack_rejects_traversal_and_extra_files(tmp_path):
         actions.unpack_bundle(buffer.getvalue(), tmp_path)
 
 
-def test_verify_upload_checks_download_without_github_api(tmp_path, monkeypatch):
+def test_verify_upload_retries_then_checks_ciphertext_and_run(tmp_path, monkeypatch):
     monkeypatch.setenv("DDT_BACKUP_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
-    monkeypatch.delenv("GH_TOKEN", raising=False)
     source = tmp_path / "state.enc"
     pack_encrypted(source, {"workflow_run_id": "123"})
-    download_dir = tmp_path / "download"
-    download_dir.mkdir()
-    downloaded = download_dir / "state.enc"
-    content = source.read_bytes()
-    downloaded.write_bytes(content)
-    monkeypatch.setattr("sys.argv", [
-        "ddt.actions", "verify-upload", "--source", str(source), "--download-dir", str(download_dir)
-    ])
-    actions.main()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.write(source, "state.enc")
+
+    calls = []
+    delays = []
+
+    class FakeGitHub:
+        def download(self, artifact):
+            calls.append(artifact["id"])
+            if len(calls) == 1:
+                raise actions.GitHubRequestError(404)
+            if len(calls) == 2:
+                raise httpx.ReadTimeout("download timed out")
+            return buffer.getvalue()
+
+    monkeypatch.setattr(actions.time, "sleep", delays.append)
+    github = FakeGitHub()
+    actions.verify_upload(github, 42, source)
+    assert calls == [42, 42, 42]
+    assert delays == [2, 5]
 
     monkeypatch.setenv("GITHUB_RUN_ID", "456")
     with pytest.raises(ValueError, match="工作流"):
-        actions.main()
+        actions.verify_upload(github, 42, source)
 
-    extra = download_dir / "extra"
-    extra.touch()
-    with pytest.raises(ValueError, match="仅包含"):
-        actions.main()
-    extra.unlink()
-    downloaded.write_bytes(bytes([content[0] ^ 1]) + content[1:])
-    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    content = source.read_bytes()
+    source.write_bytes(bytes([content[0] ^ 1]) + content[1:])
     with pytest.raises(ValueError, match="不一致"):
-        actions.main()
+        actions.verify_upload(github, 42, source)
+    assert delays == [2, 5]
+
+
+@pytest.mark.parametrize("status, expected_delays", [(404, [2, 5]), (403, [])])
+def test_verify_upload_stops_when_unavailable(monkeypatch, tmp_path, status, expected_delays):
+    delays = []
+
+    class FakeGitHub:
+        def download(self, artifact):
+            raise actions.GitHubRequestError(status)
+
+    monkeypatch.setattr(actions, "ARTIFACT_RETRY_DELAYS", (2, 5))
+    monkeypatch.setattr(actions.time, "sleep", delays.append)
+    with pytest.raises(RuntimeError, match=f"HTTP {status}"):
+        actions.verify_upload(FakeGitHub(), 42, tmp_path / "state.enc")
+    assert delays == expected_delays
 
 
 @pytest.mark.parametrize("visible_ids", [[12, 9, 11, 10, 8], [9, 11, 10, 8]])
